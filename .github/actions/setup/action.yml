@@ -1,0 +1,7 @@
+name: setup
+description: The pinned toolchain and a warm cargo cache.
+
+runs:
+  using: composite
+  steps:
+    - uses: Swatinem/rust-cache@v2
