@@ -1,0 +1,2 @@
+# Names that read as words in docs, not code.
+doc-valid-idents = ["CommonMark", ".."]

@@ -10,3 +10,4 @@ repository = "https://github.com/oddcoder/git-kb"
 pedantic = { level = "warn", priority = -1 }
 
 [dependencies]
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
