@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 
 use clap::Parser;
+use git_kb::build::Builder;
 use git_kb::cli::{Cli, Command};
 use git_kb::config::Config;
 use tracing::{error, info};
@@ -41,7 +42,6 @@ fn main() -> ExitCode {
         info!("no {}: every setting is its default", Config::FILE);
     }
 
-    // Serving and building come in later steps; until then, what would be done.
     match command {
         Command::Serve { .. } => {
             let address = SocketAddr::new(config.serve.host, config.serve.port);
@@ -49,7 +49,15 @@ fn main() -> ExitCode {
         }
         Command::Build { .. } => {
             let out = &config.build.out;
-            info!(folder = %folder.display(), out = %out.display(), "would build");
+            match Builder::new().build(&folder, out) {
+                Ok(built) => {
+                    info!(pages = built.pages, files = built.files, out = %out.display(), "built");
+                }
+                Err(e) => {
+                    error!("{e:#}");
+                    return ExitCode::FAILURE;
+                }
+            }
         }
     }
     ExitCode::SUCCESS
