@@ -18,6 +18,7 @@ use ignore::WalkBuilder;
 use tracing::debug;
 
 use crate::render::Renderer;
+use crate::shell::{self, Links, Shell};
 
 /// What a build wrote.
 #[derive(Debug, PartialEq, Eq)]
@@ -77,6 +78,7 @@ impl Builder {
         // Every file first, so that each page knows, as it is rendered, which folders are shown by their
         // README: those with one and without an index.md, each with its README's page.
         let files = Self::files(&folder, Some(&out))?;
+        let shell = Shell::new(Self::name(&folder), Links::Built);
         let readmes = Self::readmes(&files);
 
         for path in &files {
@@ -95,7 +97,7 @@ impl Builder {
             }
             if markdown {
                 let text = fs::read_to_string(&from).with_context(|| from.display().to_string())?;
-                let (html, title) = self.page(&text, path, &readmes);
+                let (html, title) = self.page(&shell, &text, path, &readmes);
                 fs::write(&to, html).with_context(|| to.display().to_string())?;
                 debug!(page = %path.display(), "rendered");
                 built.pages += 1;
@@ -107,10 +109,13 @@ impl Builder {
             }
         }
         for (path, folder) in &folders {
-            if Self::index(&out, path, folder)? {
+            if Self::index(&shell, &out, path, folder)? {
                 built.folders += 1;
             }
         }
+        let style = out.join(shell::STYLE_PATH);
+        fs::create_dir_all(style.parent().unwrap_or(&out))?;
+        fs::write(&style, shell::STYLE).with_context(|| style.display().to_string())?;
         fs::write(
             out.join(Self::MARK),
             "Written by git kb build, which replaces everything here when it builds again.\n",
@@ -173,6 +178,7 @@ impl Builder {
     /// its file's name.
     fn page(
         &self,
+        shell: &Shell,
         markdown: &str,
         path: &Path,
         readmes: &BTreeMap<PathBuf, String>,
@@ -182,15 +188,8 @@ impl Builder {
             .render_with(markdown, &|dest| Self::moved(path, dest, readmes));
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
         let title = page.title.unwrap_or_else(|| name.into_owned());
-        (Self::document(&title, &page.html), title)
-    }
-
-    /// An HTML document with a title and a body.
-    pub(crate) fn document(title: &str, body: &str) -> String {
-        format!(
-            "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n</head>\n<body>\n{body}</body>\n</html>\n",
-            Self::escape(title)
-        )
+        let at = path.parent().unwrap_or(Path::new(""));
+        (shell.page(at, &title, &page.html), title)
     }
 
     /// A page filed under its folder, by the name of the HTML file it was written as and its title, and each
@@ -225,7 +224,7 @@ impl Builder {
 
     /// A folder's `index.html`, unless its `index.md` is it already: a page that redirects to its README's,
     /// or else a list of its folders and its pages, by title. Answers whether it wrote one.
-    fn index(out: &Path, path: &Path, folder: &Folder) -> anyhow::Result<bool> {
+    fn index(shell: &Shell, out: &Path, path: &Path, folder: &Folder) -> anyhow::Result<bool> {
         let named = |name: &str| folder.pages.keys().find(|p| p.eq_ignore_ascii_case(name));
         if named("index.html").is_some() {
             return Ok(false);
@@ -238,14 +237,14 @@ impl Builder {
             debug!(folder = %path.display(), "redirected to its README");
             return Ok(true);
         }
-        fs::write(&index, Self::listing(path, folder))
+        fs::write(&index, Self::listing(shell, path, folder))
             .with_context(|| index.display().to_string())?;
         debug!(folder = %path.display(), "indexed");
         Ok(true)
     }
 
     /// A folder's list: its folders, each a link to its `index.html`, and then its pages, by title.
-    pub(crate) fn listing(path: &Path, folder: &Folder) -> String {
+    pub(crate) fn listing(shell: &Shell, path: &Path, folder: &Folder) -> String {
         let name = path
             .file_name()
             .map_or_else(|| "Contents".into(), |n| n.to_string_lossy().into_owned());
@@ -254,7 +253,7 @@ impl Builder {
             .iter()
             .map(|f| {
                 format!(
-                    "<li><a href=\"{}/index.html\">{}/</a></li>\n",
+                    "<li class=\"folder\"><a href=\"{}/index.html\">{}/</a></li>\n",
                     Self::href(f),
                     Self::escape(f)
                 )
@@ -267,8 +266,18 @@ impl Builder {
                 )
             }))
             .collect();
-        let body = format!("<h1>{}</h1>\n<ul>\n{items}</ul>\n", Self::escape(&name));
-        Self::document(&name, &body)
+        let body = format!(
+            "<h1>{}</h1>\n<ul class=\"listing\">\n{items}</ul>\n",
+            Self::escape(&name)
+        );
+        shell.page(path, &name, &body)
+    }
+
+    /// A site's name: its folder's.
+    pub(crate) fn name(folder: &Path) -> String {
+        folder
+            .file_name()
+            .map_or_else(|| "/".into(), |n| n.to_string_lossy().into_owned())
     }
 
     /// A file's name as a link to it: every character a URL holds as itself kept, and the rest as %XX.
@@ -437,6 +446,8 @@ mod tests {
                 .build()
                 .flatten()
                 .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+                // The style sheet is in every site; a test of its own sees it.
+                .filter(|e| !e.path().starts_with(root.join("_assets")))
                 .map(|e| {
                     e.path()
                         .strip_prefix(&root)
@@ -478,7 +489,7 @@ mod tests {
         );
         let home = tree.read("site/index.html");
         assert!(home.starts_with("<!doctype html>"), "{home}");
-        assert!(home.contains("<title>Home</title>"), "{home}");
+        assert!(home.contains("<title>Home · docs</title>"), "{home}");
         assert!(home.contains(r#"<h1 id="home">Home</h1>"#), "{home}");
     }
 
@@ -531,12 +542,12 @@ mod tests {
         assert!(home.contains(r#"href="arch/overview.html#data""#), "{home}");
         assert!(home.contains(r#"src="img/chip.png""#), "{home}");
         let overview = tree.read("site/arch/overview.html");
-        assert!(overview.contains(r#"href="../index.html""#), "{overview}");
-        assert_eq!(
-            overview.matches(r#"href="../index.html""#).count(),
-            2,
-            "{overview}"
-        );
+        for link in [
+            r#"<a href="../index.html">home</a>"#,
+            r#"<a href="../index.html">from the top</a>"#,
+        ] {
+            assert!(overview.contains(link), "{link} missing from {overview}");
+        }
     }
 
     #[test]
@@ -547,7 +558,7 @@ mod tests {
             .unwrap();
         assert!(
             tree.read("site/notes.html")
-                .contains("<title>notes</title>")
+                .contains("<title>notes · docs</title>")
         );
     }
 
@@ -559,7 +570,7 @@ mod tests {
             .unwrap();
         assert!(
             tree.read("site/a.html")
-                .contains("<title>A &lt; B &amp; &quot;c&quot;</title>")
+                .contains("<title>A &lt; B &amp; &quot;c&quot; · docs</title>")
         );
     }
 
@@ -708,7 +719,10 @@ mod tests {
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(built.folders, 0);
-        assert!(tree.read("site/index.html").contains("<title>Home</title>"));
+        assert!(
+            tree.read("site/index.html")
+                .contains("<title>Home · docs</title>")
+        );
     }
 
     #[test]
@@ -803,5 +817,18 @@ mod tests {
             .unwrap();
         assert!(!tree.path("site/img/index.html").exists());
         assert!(!tree.read("site/index.html").contains("img/"));
+    }
+
+    #[test]
+    fn a_built_site_has_its_style_sheet() {
+        let tree = Tree::with(&[("docs/arch/a.md", b"# A")]);
+        Builder::new()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        assert_eq!(tree.read("site/_assets/style.css"), shell::STYLE);
+        assert!(
+            tree.read("site/arch/a.html")
+                .contains(r#"href="../_assets/style.css""#)
+        );
     }
 }

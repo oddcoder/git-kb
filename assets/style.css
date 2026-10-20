@@ -1,0 +1,90 @@
+/* git-kb's pages: a slim bar with the site's name, a trail of folders, and the page in a column narrow enough to
+   read. Light or dark as the system is, by color-scheme and light-dark(). Every color is a variable, for themes
+   to set. */
+
+:root {
+  color-scheme: light dark;
+  --page: light-dark(#ffffff, #0d1117);
+  --text: light-dark(#1f2328, #e6edf3);
+  --muted: light-dark(#59636e, #9198a1);
+  --line: light-dark(#d1d9e0, #3d444d);
+  --subtle: light-dark(#f6f8fa, #151b23);
+  --accent: light-dark(#0969da, #4493f8);
+  --mark: light-dark(#fff8c5, rgba(187, 128, 9, 0.15));
+  /* Code, by the kind of each token. */
+  --code-comment: light-dark(#59636e, #9198a1);
+  --code-keyword: light-dark(#cf222e, #ff7b72);
+  --code-string: light-dark(#0a3069, #a5d6ff);
+  --code-constant: light-dark(#0550ae, #79c0ff);
+  --code-entity: light-dark(#6639ba, #d2a8ff);
+  --code-tag: light-dark(#116329, #7ee787);
+  --code-variable: light-dark(#953800, #ffa657);
+
+  --text-width: 46em;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--page); color: var(--text); }
+body { margin: 0; font: 16px/1.6 var(--sans); }
+
+/* The bar: the site's name, linked to its top. */
+.bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 12px; height: 48px;
+       padding: 0 24px; border-bottom: 1px solid var(--line);
+       background: color-mix(in srgb, var(--page) 92%, transparent); backdrop-filter: blur(8px); }
+.bar .site { color: var(--text); font-weight: 600; text-decoration: none; }
+
+/* The page, and the trail of the folders it is in. */
+.page { max-width: var(--text-width); margin: 0 auto; padding: 24px 24px 96px; }
+.crumbs { margin-bottom: 8px; color: var(--muted); font-size: 14px; }
+.crumbs a { color: var(--muted); }
+.crumbs .sep { margin: 0 6px; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1, h2, h3, h4, h5, h6 { margin: 1.6em 0 0.6em; line-height: 1.25; font-weight: 600; }
+h1 { margin-top: 0.4em; padding-bottom: 0.3em; border-bottom: 1px solid var(--line); font-size: 2em; }
+h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--line); font-size: 1.5em; }
+h3 { font-size: 1.25em; }
+h4 { font-size: 1em; }
+h5, h6 { font-size: 0.875em; }
+h6 { color: var(--muted); }
+
+p, ul, ol, blockquote, table, pre, details { margin: 0 0 1em; }
+ul, ol { padding-left: 2em; }
+li + li { margin-top: 0.25em; }
+li > input[type="checkbox"] { margin: 0 0.4em 0 -1.4em; }
+blockquote { margin-left: 0; padding: 0 1em; border-left: 4px solid var(--line); color: var(--muted); }
+hr { height: 4px; margin: 1.5em 0; border: 0; background: var(--line); }
+img { max-width: 100%; }
+mark { background: var(--mark); color: inherit; }
+
+table { display: block; width: max-content; max-width: 100%; overflow: auto; border-collapse: collapse; }
+th, td { padding: 6px 13px; border: 1px solid var(--line); }
+th { font-weight: 600; }
+tr:nth-child(2n) { background: var(--subtle); }
+
+code, pre { font-family: var(--mono); font-size: 85%; }
+code { padding: 0.2em 0.4em; border-radius: 6px; background: var(--subtle); }
+pre { padding: 16px; overflow: auto; line-height: 1.45; border-radius: 6px; background: var(--subtle); }
+pre code { padding: 0; font-size: 100%; background: none; }
+
+.footnote-definition { margin-top: 1em; color: var(--muted); font-size: 0.875em; }
+.footnote-definition p { display: inline; }
+
+/* Code's tokens, by the scopes the renderer marks them with. */
+.hl-comment { color: var(--code-comment); font-style: italic; }
+.hl-keyword, .hl-storage { color: var(--code-keyword); }
+.hl-string { color: var(--code-string); }
+.hl-constant, .hl-support { color: var(--code-constant); }
+.hl-entity.hl-name, .hl-entity.hl-other { color: var(--code-entity); }
+.hl-entity.hl-name.hl-tag { color: var(--code-tag); }
+.hl-variable { color: var(--code-variable); }
+.hl-invalid { color: var(--code-keyword); text-decoration: underline wavy; }
+
+/* A folder's list of its folders and pages. */
+.listing { padding-left: 0; list-style: none; }
+.listing li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.listing .folder::before { content: "▸ "; color: var(--muted); }

@@ -23,21 +23,25 @@ use tracing::{debug, error, info};
 
 use crate::build::{Builder, Folder};
 use crate::render::Renderer;
+use crate::shell::{self, Links, Shell};
 
 /// Serves a folder of Markdown.
 #[derive(Debug)]
 pub struct Server {
     root: PathBuf,
     renderer: Renderer,
+    shell: Shell,
 }
 
 impl Server {
     /// A server of a folder of Markdown.
     #[must_use]
     pub fn new(root: PathBuf) -> Self {
+        let shell = Shell::new(Builder::name(&root), Links::Served);
         Self {
             root,
             renderer: Renderer::new(),
+            shell,
         }
     }
 
@@ -71,7 +75,7 @@ impl Server {
                 let path = uri.path().to_owned();
                 tokio::task::spawn_blocking(move || server.answer(&path))
                     .await
-                    .unwrap_or_else(|e| Self::failed(&e.into()))
+                    .unwrap_or_else(|e| Self::broke(&e.into()))
             })
             .with_state(self)
     }
@@ -80,12 +84,19 @@ impl Server {
     fn answer(&self, path: &str) -> Response {
         debug!(path, "request");
         let Ok(decoded) = percent_decode_str(path).decode_utf8() else {
-            return Self::not_found(path);
+            return self.not_found(path);
         };
         let wanted = decoded.trim_start_matches('/');
+        if wanted == shell::STYLE_PATH {
+            return (
+                [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+                shell::STYLE,
+            )
+                .into_response();
+        }
         let files = match Builder::files(&self.root, None) {
             Ok(files) => files,
-            Err(e) => return Self::failed(&e),
+            Err(e) => return self.failed(&e),
         };
         let at = Path::new(wanted);
         // A folder is a path with pages below it, or the top.
@@ -116,7 +127,7 @@ impl Server {
                 return self.file(file);
             }
         }
-        Self::not_found(path)
+        self.not_found(path)
     }
 
     /// A folder's page: its `index.md`, or else its `README.md`, or else a list of its folders and pages.
@@ -153,21 +164,22 @@ impl Server {
                 folder.folders.insert(sub.to_string_lossy().into_owned());
             }
         }
-        Html(Builder::listing(at, &folder)).into_response()
+        Html(Builder::listing(&self.shell, at, &folder)).into_response()
     }
 
     /// A file of the site: a page, rendered, or any other file, as it is.
     fn file(&self, file: &Path) -> Response {
         let from = self.root.join(file);
         let read = |e: std::io::Error| {
-            Self::failed(&anyhow::Error::from(e).context(from.display().to_string()))
+            self.failed(&anyhow::Error::from(e).context(from.display().to_string()))
         };
         if Self::is_markdown(file) {
             return match std::fs::read_to_string(&from) {
                 Ok(text) => {
                     let page = self.renderer.render(&text);
                     let title = page.title.unwrap_or_else(|| Self::stem(file));
-                    Html(Builder::document(&title, &page.html)).into_response()
+                    let at = file.parent().unwrap_or(Path::new(""));
+                    Html(self.shell.page(at, &title, &page.html)).into_response()
                 }
                 Err(e) => read(e),
             };
@@ -194,21 +206,32 @@ impl Server {
             .into_owned()
     }
 
-    fn not_found(path: &str) -> Response {
+    fn not_found(&self, path: &str) -> Response {
         let body = format!(
             "<h1>Not found</h1>\n<p>There is no page at {}.</p>\n",
             Builder::escape(path)
         );
         (
             StatusCode::NOT_FOUND,
-            Html(Builder::document("Not found", &body)),
+            Html(self.shell.page(Path::new(""), "Not found", &body)),
         )
             .into_response()
     }
 
-    fn failed(e: &anyhow::Error) -> Response {
+    /// The answer when working one out failed, before there was a server to shape it.
+    fn broke(e: &anyhow::Error) -> Response {
         error!("{e:#}");
-        let body = Builder::document("Error", "<h1>Something went wrong</h1>\n");
+        (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong").into_response()
+    }
+
+    fn failed(&self, e: &anyhow::Error) -> Response {
+        error!("{e:#}");
+        let body = self.shell.page(
+            Path::new(""),
+            "Error",
+            "<h1>Something went wrong</h1>
+",
+        );
         (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
     }
 }
@@ -276,7 +299,10 @@ mod tests {
             let (status, kind, body) = site.get(path).await;
             assert_eq!(status, StatusCode::OK, "{path}");
             assert!(kind.starts_with("text/html"), "{path}: {kind}");
-            assert!(body.contains("<title>Overview</title>"), "{path}: {body}");
+            assert!(
+                body.contains("<title>Overview · docs</title>"),
+                "{path}: {body}"
+            );
             assert!(body.contains(r#"<a href="dma.md">"#), "{path}: {body}");
         }
     }
@@ -290,24 +316,24 @@ mod tests {
             ("docs/algebra/gemm.md", b"# GEMM"),
             ("docs/algebra/deep/x.md", b"# X"),
         ]);
-        assert!(site.get("/").await.2.contains("<title>Home</title>"));
+        assert!(site.get("/").await.2.contains("<title>Home · docs</title>"));
         assert!(
             site.get("/index.html")
                 .await
                 .2
-                .contains("<title>Home</title>")
+                .contains("<title>Home · docs</title>")
         );
         assert!(
             site.get("/arch/")
                 .await
                 .2
-                .contains("<title>Architecture</title>")
+                .contains("<title>Architecture · docs</title>")
         );
         assert!(
             site.get("/arch/readme.html")
                 .await
                 .2
-                .contains("<title>Architecture</title>")
+                .contains("<title>Architecture · docs</title>")
         );
         let list = site.get("/algebra/").await.2;
         assert!(
@@ -347,7 +373,7 @@ mod tests {
             site.get("/a%20b.md")
                 .await
                 .2
-                .contains("<title>Spaced</title>")
+                .contains("<title>Spaced · docs</title>")
         );
     }
 
@@ -386,5 +412,22 @@ mod tests {
             format!("{error:#}").contains(&address.to_string()),
             "{error:#}"
         );
+    }
+
+    #[tokio::test]
+    async fn pages_are_in_the_shell_and_the_style_is_served() {
+        let site = Site::with(&[("docs/arch/dma.md", b"# DMA")]);
+        let page = site.get("/arch/dma.md").await.2;
+        assert!(
+            page.contains(r#"<link rel="stylesheet" href="/_assets/style.css">"#),
+            "{page}"
+        );
+        assert!(page.contains(r#"<a href="/arch/">arch</a>"#), "{page}");
+        let (status, kind, style) = site.get("/_assets/style.css").await;
+        assert_eq!(
+            (status, kind.as_str()),
+            (StatusCode::OK, "text/css; charset=utf-8")
+        );
+        assert_eq!(style, shell::STYLE);
     }
 }
