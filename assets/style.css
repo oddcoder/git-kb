@@ -193,6 +193,21 @@ pre code { padding: 0; font-size: 100%; background: none; }
 .hl-variable { color: var(--code-variable); }
 .hl-invalid { color: var(--code-keyword); text-decoration: underline wavy; }
 
+/* Page | Source, at the top right of the page: which of the two shows. */
+.page { position: relative; }
+.toggle { position: absolute; opacity: 0; pointer-events: none; }
+.p-source { display: none; }
+#v-source:checked ~ .p-page { display: none; }
+#v-source:checked ~ .p-source { display: block; }
+pre.source code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.view-switch { position: absolute; top: 24px; right: 24px; z-index: 2; display: flex; padding: 2px;
+               border: 1px solid var(--line); border-radius: 8px; background: var(--subtle); font-size: 12px;
+               cursor: pointer; user-select: none; }
+.view-switch span { padding: 2px 10px; border-radius: 6px; color: var(--muted); }
+.view-switch span:first-child, #v-source:checked + .view-switch span:last-child {
+  background: var(--page); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+#v-source:checked + .view-switch span:first-child { background: none; color: var(--muted); box-shadow: none; }
+
 /* A page's margin: beside each block, on hover, when it last changed; clicked, a card of how it changed. A block
    not committed yet is marked so. */
 .blk { position: relative; }

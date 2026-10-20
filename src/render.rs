@@ -171,6 +171,18 @@ impl Renderer {
             .collect()
     }
 
+    /// A page's Markdown, highlighted, as its source is shown beside it.
+    #[must_use]
+    pub fn source(&self, markdown: &str) -> String {
+        let code = Self::highlight("md", markdown).unwrap_or_else(|| {
+            markdown
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        });
+        format!("<pre class=\"source\"><code>{code}</code></pre>\n")
+    }
+
     /// A page's title, as `render` gives it, without rendering the rest: the text of its first top-level heading.
     #[must_use]
     pub fn title(&self, markdown: &str) -> Option<String> {
@@ -512,6 +524,20 @@ mod tests {
             assert!(html.contains(wanted), "{wanted} missing from {html}");
         }
         assert_eq!(html.matches("</div>").count(), 4, "{html}");
+    }
+
+    #[test]
+    fn a_page_s_source_is_its_markdown_highlighted() {
+        let source = Renderer::new().source("# Title\n\n<b> & *it*\n");
+        assert!(
+            source.starts_with(r#"<pre class="source"><code>"#),
+            "{source}"
+        );
+        assert!(source.contains("hl-"), "highlighted: {source}");
+        assert!(
+            source.contains("&lt;") && source.contains("&amp;") && !source.contains("<b>"),
+            "escaped: {source}"
+        );
     }
 
     #[test]

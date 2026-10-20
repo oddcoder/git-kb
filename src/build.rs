@@ -354,6 +354,7 @@ impl Builder {
             headings: &page.headings,
         };
         let body = shell.noted(at, path, &page.html, history);
+        let body = Shell::with_source(&body, &self.renderer.source(markdown));
         (shell.page(at, &file, &title, &body, &nav), title)
     }
 

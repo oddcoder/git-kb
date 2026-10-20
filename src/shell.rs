@@ -259,6 +259,22 @@ impl Shell {
         if here { " aria-current=\"page\"" } else { "" }
     }
 
+    /// A page's body with a switch to show it or its source instead, by the page alone, so a built site has it
+    /// too.
+    #[must_use]
+    pub fn with_source(body: &str, source: &str) -> String {
+        format!(
+            concat!(
+                "<input type=\"checkbox\" id=\"v-source\" class=\"toggle\">",
+                "<label for=\"v-source\" class=\"view-switch\" title=\"Show the page or its Markdown source\">",
+                "<span>Page</span><span>Source</span></label>\n",
+                "<div class=\"p-page\">\n{body}</div>\n<div class=\"p-source\">\n{source}</div>\n"
+            ),
+            body = body,
+            source = source
+        )
+    }
+
     /// A built page's address where its site lives, for search to know it by, when the site says where.
     fn canonical(&self, at: &Path, file: &str) -> String {
         let folder = Self::encode(at);

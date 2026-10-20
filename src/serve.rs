@@ -328,6 +328,14 @@ impl View<'_> {
             return self.folder(at);
         }
         if let Some(file) = files.iter().find(|f| f.as_path() == at) {
+            // A page's Markdown, as it is.
+            if query == Some("raw") && Server::is_markdown(file) {
+                return match self.read(file) {
+                    Ok(bytes) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes)
+                        .into_response(),
+                    Err(e) => self.server.failed(&e),
+                };
+            }
             if query == Some("history") && Server::is_markdown(file) {
                 return self.history(file);
             }
@@ -418,6 +426,7 @@ impl View<'_> {
         let body = self
             .shell
             .noted(at, file, &page.html, &self.page_history(file, &bytes));
+        let body = Shell::with_source(&body, &self.server.renderer.source(&text));
         Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
     }
 
@@ -935,6 +944,29 @@ mod tests {
         let (status, _, body) = site.get("/ref/main/a.md").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(body.contains("not in a git repository"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_page_shows_its_source_too_and_gives_it_raw() {
+        let site = Site::with(&[("docs/a.md", b"# A\n\n*Some* text.\n")]);
+        let page = site.get("/docs/a.md").await.2;
+        assert!(
+            page.contains(r#"<input type="checkbox" id="v-source" class="toggle">"#),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"<div class="p-source">"#) && page.contains(r#"<pre class="source">"#),
+            "{page}"
+        );
+        let (status, kind, raw) = site.get("/docs/a.md?raw").await;
+        assert_eq!(
+            (status, kind.as_str(), raw.as_str()),
+            (
+                StatusCode::OK,
+                "text/plain; charset=utf-8",
+                "# A\n\n*Some* text.\n"
+            )
+        );
     }
 
     #[tokio::test]
