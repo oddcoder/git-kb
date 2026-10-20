@@ -70,6 +70,9 @@ impl Heading {
     }
 }
 
+/// Where a link's or image's target is now, given it as written, if it has moved.
+pub type Moved<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 /// Renders Markdown as HTML. What it holds is how it renders, so that what later features need, such as a
 /// highlighter, is made once and kept, not made again for every page.
 #[derive(Debug, Clone)]
@@ -104,6 +107,13 @@ impl Renderer {
     /// Renders Markdown as HTML.
     #[must_use]
     pub fn render(&self, markdown: &str) -> Page {
+        self.render_with(markdown, &|_| None)
+    }
+
+    /// Renders Markdown as HTML, with each link's and image's target where `moved` says it is now, if it
+    /// says, as a built site's pages are `.html` files rather than `.md`.
+    #[must_use]
+    pub fn render_with(&self, markdown: &str, moved: Moved) -> Page {
         let mut ids = Ids::default();
         let mut headings = vec![];
         let mut out = vec![];
@@ -125,10 +135,37 @@ impl Renderer {
                     let inner = Self::inside(&mut events);
                     out.extend(Self::code_block(kind, inner));
                 }
+                Event::Start(Tag::Link {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                }) => out.push(Event::Start(Tag::Link {
+                    link_type,
+                    dest_url: Self::target(dest_url, moved),
+                    title,
+                    id,
+                })),
+                Event::Start(Tag::Image {
+                    link_type,
+                    dest_url,
+                    title,
+                    id,
+                }) => out.push(Event::Start(Tag::Image {
+                    link_type,
+                    dest_url: Self::target(dest_url, moved),
+                    title,
+                    id,
+                })),
                 event => out.push(event),
             }
         }
         Page::new(out, headings)
+    }
+
+    /// A link's or image's target, or where `moved` says it is now.
+    fn target<'a>(dest: CowStr<'a>, moved: Moved) -> CowStr<'a> {
+        moved(&dest).map_or(dest, Into::into)
     }
 
     /// A code block: highlighted, when its language is known, or else as it was, for pulldown-cmark to
@@ -400,6 +437,35 @@ mod tests {
         assert_eq!(
             Renderer::new().render("    a < b\n").html,
             "<pre><code>a &lt; b\n</code></pre>\n"
+        );
+    }
+
+    #[test]
+    fn links_and_images_go_where_they_have_moved() {
+        let moved = |dest: &str| dest.strip_suffix(".md").map(|p| format!("{p}.html"));
+        let html = Renderer::new()
+            .render_with(
+                "[a](a.md) [web](https://x.org) ![i](i.png) [r][ref]\n\n[ref]: r.md",
+                &moved,
+            )
+            .html;
+        for wanted in [
+            r#"href="a.html""#,
+            r#"href="https://x.org""#,
+            r#"src="i.png""#,
+            r#"href="r.html""#,
+        ] {
+            assert!(html.contains(wanted), "{wanted} missing from {html}");
+        }
+    }
+
+    #[test]
+    fn without_a_move_links_are_as_written() {
+        assert!(
+            Renderer::new()
+                .render("[a](a.md)")
+                .html
+                .contains(r#"href="a.md""#)
         );
     }
 

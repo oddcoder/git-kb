@@ -1,6 +1,7 @@
 //! `git kb build`: a folder of Markdown written as a static site, a folder of files to open from disk or put on
 //! any host. Each page is written as HTML beside where its Markdown is, `arch/overview.md` as
-//! `arch/overview.html`, and every other file, such as an image, is copied as it is. What `.gitignore` and
+//! `arch/overview.html`, with its links to other pages made links to theirs, and every other file, such as an
+//! image, is copied as it is. What `.gitignore` and
 //! `.kbignore` files ignore is left out: `.gitignore` for what git leaves out too, such as `target/`, and
 //! `.kbignore`, in the same form, for what only the site does. So is `.git`, git's own store, and links,
 //! which are neither followed nor copied.
@@ -128,13 +129,43 @@ impl Builder {
 
     /// A page's HTML document: the Markdown rendered, titled by its first heading, or else by its file's name.
     fn page(&self, markdown: &str, path: &Path) -> String {
-        let page = self.renderer.render(markdown);
+        let page = self
+            .renderer
+            .render_with(markdown, &|dest| Self::moved(path, dest));
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
         let title = Self::escape(page.title.as_deref().unwrap_or(&name));
         format!(
             "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n</head>\n<body>\n{}</body>\n</html>\n",
             page.html
         )
+    }
+
+    /// Where a link from a page goes in the site: a link to a page, `arch/overview.md#data`, to its HTML,
+    /// `arch/overview.html#data`; one from the site's top, `/arch/overview.md`, made relative to the page,
+    /// so that the site works from disk; and any other, to another site, an image or a folder, as it is.
+    fn moved(page: &Path, dest: &str) -> Option<String> {
+        let (path, rest) = dest.split_at(dest.find(['#', '?']).unwrap_or(dest.len()));
+        let elsewhere = path.starts_with("//")
+            || path
+                .split('/')
+                .next()
+                .is_some_and(|first| first.contains(':'));
+        let markdown = path.len() > 3
+            && path
+                .get(path.len() - 3..)
+                .is_some_and(|end| end.eq_ignore_ascii_case(".md"));
+        if elsewhere || !markdown {
+            return None;
+        }
+        let html = format!("{}.html", &path[..path.len() - 3]);
+        let html = match html.strip_prefix('/') {
+            Some(from_top) => {
+                let depth = page.components().count().saturating_sub(1);
+                format!("{}{from_top}", "../".repeat(depth))
+            }
+            None => html,
+        };
+        Some(format!("{html}{rest}"))
     }
 
     /// Text as HTML, with the characters that would read as markup escaped.
@@ -213,6 +244,58 @@ mod tests {
         assert!(home.starts_with("<!doctype html>"), "{home}");
         assert!(home.contains("<title>Home</title>"), "{home}");
         assert!(home.contains(r#"<h1 id="home">Home</h1>"#), "{home}");
+    }
+
+    #[test]
+    fn links_to_pages_go_to_their_html() {
+        let page = Path::new("arch/overview.md");
+        for (dest, moved) in [
+            ("dma.md", Some("dma.html")),
+            ("../index.md#top", Some("../index.html#top")),
+            ("NOTES.MD?x=1#y", Some("NOTES.html?x=1#y")),
+            ("/algebra/gemm.md", Some("../algebra/gemm.html")),
+            ("https://example.org/a.md", None),
+            ("//example.org/a.md", None),
+            ("mailto:a@b.md", None),
+            ("img/chip.png", None),
+            ("arch/", None),
+            ("#section", None),
+            (".md", None),
+            ("€a", None),
+        ] {
+            assert_eq!(Builder::moved(page, dest).as_deref(), moved, "{dest}");
+        }
+        assert_eq!(
+            Builder::moved(Path::new("index.md"), "/a.md").as_deref(),
+            Some("a.html")
+        );
+    }
+
+    #[test]
+    fn built_pages_link_to_each_other() {
+        let tree = Tree::with(&[
+            (
+                "docs/index.md",
+                b"See [the overview](arch/overview.md#data) and ![chip](img/chip.png).",
+            ),
+            (
+                "docs/arch/overview.md",
+                b"Back [home](../index.md), or [from the top](/index.md).",
+            ),
+        ]);
+        Builder::new()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        let home = tree.read("site/index.html");
+        assert!(home.contains(r#"href="arch/overview.html#data""#), "{home}");
+        assert!(home.contains(r#"src="img/chip.png""#), "{home}");
+        let overview = tree.read("site/arch/overview.html");
+        assert!(overview.contains(r#"href="../index.html""#), "{overview}");
+        assert_eq!(
+            overview.matches(r#"href="../index.html""#).count(),
+            2,
+            "{overview}"
+        );
     }
 
     #[test]
