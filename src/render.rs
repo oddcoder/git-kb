@@ -110,6 +110,26 @@ impl Renderer {
         self.render_with(markdown, &|_| None)
     }
 
+    /// A page's title, as `render` gives it, without rendering the rest: the text of its first top-level heading.
+    #[must_use]
+    pub fn title(&self, markdown: &str) -> Option<String> {
+        let mut events = Parser::new_ext(markdown, self.options);
+        while let Some(event) = events.next() {
+            if let Event::Start(Tag::Heading {
+                level: HeadingLevel::H1,
+                ..
+            }) = event
+            {
+                let text = Self::plain_text(&Self::inside(&mut events));
+                let text = text.trim();
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// Renders Markdown as HTML, with each link's and image's target where `moved` says it is now, if it
     /// says, as a built site's pages are `.html` files rather than `.md`.
     #[must_use]
@@ -360,6 +380,23 @@ mod tests {
         );
         assert_eq!(Renderer::new().render("## Only a subheading").title, None);
         assert_eq!(Renderer::new().render("Just text.").title, None);
+    }
+
+    #[test]
+    fn the_title_is_the_rendered_page_s() {
+        let renderer = Renderer::new();
+        for markdown in [
+            "# The **fused** epilogue\n# Second",
+            "Intro\n\n## Sub\n\n#  \n\n# Title",
+            "Setext\n======\n",
+            "No heading",
+        ] {
+            assert_eq!(
+                renderer.title(markdown),
+                renderer.render(markdown).title,
+                "{markdown}"
+            );
+        }
     }
 
     #[test]

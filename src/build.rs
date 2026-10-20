@@ -18,6 +18,7 @@ use ignore::WalkBuilder;
 use tracing::debug;
 
 use crate::config::LookConfig;
+use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
 use crate::shell::{self, Links, Shell};
 
@@ -100,6 +101,7 @@ impl Builder {
             .living_at(self.url.clone())
             .looking(self.look.clone());
         let readmes = Self::readmes(&files);
+        let pages = Pages::new(&folder, &files, &self.renderer);
 
         for path in &files {
             let from = folder.join(path);
@@ -117,7 +119,7 @@ impl Builder {
             }
             if markdown {
                 let text = fs::read_to_string(&from).with_context(|| from.display().to_string())?;
-                let (html, title) = self.page(&shell, &text, path, &readmes);
+                let (html, title) = self.page(&shell, &pages, &text, path, &readmes);
                 fs::write(&to, html).with_context(|| to.display().to_string())?;
                 debug!(page = %path.display(), "rendered");
                 built.pages += 1;
@@ -129,7 +131,7 @@ impl Builder {
             }
         }
         for (path, folder) in &folders {
-            if self.index(&shell, &out, path, folder)? {
+            if self.index(&shell, &pages, &out, path, folder)? {
                 built.folders += 1;
             }
         }
@@ -201,6 +203,7 @@ impl Builder {
     fn page(
         &self,
         shell: &Shell,
+        pages: &Pages,
         markdown: &str,
         path: &Path,
         readmes: &BTreeMap<PathBuf, String>,
@@ -213,7 +216,12 @@ impl Builder {
         let at = path.parent().unwrap_or(Path::new(""));
         let file = path.with_extension("html");
         let file = file.file_name().unwrap_or_default().to_string_lossy();
-        (shell.page(at, &file, &title, &page.html), title)
+        let nav = Nav {
+            pages,
+            current: path,
+            headings: &page.headings,
+        };
+        (shell.page(at, &file, &title, &page.html, &nav), title)
     }
 
     /// A page filed under its folder, by the name of the HTML file it was written as and its title, and each
@@ -251,6 +259,7 @@ impl Builder {
     fn index(
         &self,
         shell: &Shell,
+        pages: &Pages,
         out: &Path,
         path: &Path,
         folder: &Folder,
@@ -274,14 +283,14 @@ impl Builder {
             debug!(folder = %path.display(), "redirected to its README");
             return Ok(true);
         }
-        fs::write(&index, Self::listing(shell, path, folder))
+        fs::write(&index, Self::listing(shell, pages, path, folder))
             .with_context(|| index.display().to_string())?;
         debug!(folder = %path.display(), "indexed");
         Ok(true)
     }
 
     /// A folder's list: its folders, each a link to its `index.html`, and then its pages, by title.
-    pub(crate) fn listing(shell: &Shell, path: &Path, folder: &Folder) -> String {
+    pub(crate) fn listing(shell: &Shell, pages: &Pages, path: &Path, folder: &Folder) -> String {
         let name = path
             .file_name()
             .map_or_else(|| "Contents".into(), |n| n.to_string_lossy().into_owned());
@@ -307,7 +316,12 @@ impl Builder {
             "<h1>{}</h1>\n<ul class=\"listing\">\n{items}</ul>\n",
             Self::escape(&name)
         );
-        shell.page(path, "", &name, &body)
+        let nav = Nav {
+            pages,
+            current: path,
+            headings: &[],
+        };
+        shell.page(path, "", &name, &body, &nav)
     }
 
     /// A page's path in the site, as a link from its top: `arch/README.html`.
@@ -884,6 +898,28 @@ mod tests {
         assert!(
             tree.read("site/arch/a.html")
                 .contains(r#"href="../_assets/style.css""#)
+        );
+    }
+
+    #[test]
+    fn built_pages_have_the_site_s_pages_beside_them() {
+        let tree = Tree::with(&[
+            ("docs/index.md", b"# Home"),
+            ("docs/arch/dma.md", b"# DMA\n## Queues\n## Channels"),
+        ]);
+        Builder::default()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        let dma = tree.read("site/arch/dma.html");
+        assert!(
+            dma.contains(r#"<a href="../arch/dma.html" aria-current="page">DMA</a>"#),
+            "{dma}"
+        );
+        assert!(dma.contains(r##"<a href="#queues">Queues</a>"##), "{dma}");
+        let home = tree.read("site/index.html");
+        assert!(
+            home.contains(r#"<a href="./arch/index.html">arch</a>"#),
+            "{home}"
         );
     }
 

@@ -13,7 +13,7 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -33,6 +33,7 @@ use tracing::{debug, error, info, warn};
 use crate::build::{Builder, Folder};
 use crate::config::LookConfig;
 use crate::live::Live;
+use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
 use crate::shell::{self, Links, Shell};
 
@@ -122,7 +123,7 @@ impl Server {
     fn answer(&self, path: &str) -> Response {
         debug!(path, "request");
         let Ok(decoded) = percent_decode_str(path).decode_utf8() else {
-            return self.not_found(path);
+            return self.not_found(path, &[]);
         };
         let wanted = decoded.trim_start_matches('/');
         if let Some((_, text)) = shell::ASSETS.iter().find(|(asset, _)| *asset == wanted) {
@@ -147,7 +148,7 @@ impl Server {
             return self.folder(at, &files);
         }
         if let Some(file) = files.iter().find(|f| f.as_path() == at) {
-            return self.file(file);
+            return self.file(file, &files);
         }
         // A built site's page, a.html, is its Markdown's, a.md, whatever the case of the letters; and a
         // folder's index.html is the folder.
@@ -163,51 +164,34 @@ impl Server {
                     && f.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(name))
             });
             if let Some(file) = page {
-                return self.file(file);
+                return self.file(file, &files);
             }
         }
-        self.not_found(path)
+        self.not_found(path, &files)
     }
 
     /// A folder's page: its `index.md`, or else its `README.md`, or else a list of its folders and pages.
     fn folder(&self, at: &Path, files: &[PathBuf]) -> Response {
-        let here: Vec<&PathBuf> = files
-            .iter()
-            .filter(|f| f.parent().unwrap_or(Path::new("")) == at)
-            .collect();
-        for name in ["index.md", "README.md"] {
-            if let Some(file) = here.iter().find(|f| Builder::named(f, name)) {
-                return self.file(file);
-            }
+        let pages = self.pages(files);
+        if let Some(home) = pages.home(at) {
+            return self.file(home, files);
         }
-        let mut folder = Folder::default();
-        for file in here.iter().filter(|f| Self::is_markdown(f)) {
-            let Ok(text) = std::fs::read_to_string(self.root.join(file)) else {
-                continue;
-            };
-            let title = self
-                .renderer
-                .render(&text)
-                .title
-                .unwrap_or_else(|| Self::stem(file));
+        let (folders, here) = pages.entries(at);
+        let mut folder = Folder {
+            folders,
+            ..Folder::default()
+        };
+        for (file, title) in here {
             let html = file.with_extension("html");
             let html = html.file_name().unwrap_or_default().to_string_lossy();
-            folder.pages.insert(html.into_owned(), title);
+            folder.pages.insert(html.into_owned(), title.to_owned());
         }
-        for file in files.iter().filter(|f| Self::is_markdown(f)) {
-            let Ok(below) = file.strip_prefix(at) else {
-                continue;
-            };
-            let mut parts = below.components();
-            if let (Some(Component::Normal(sub)), Some(_)) = (parts.next(), parts.next()) {
-                folder.folders.insert(sub.to_string_lossy().into_owned());
-            }
-        }
-        Html(Builder::listing(&self.shell, at, &folder)).into_response()
+        Html(Builder::listing(&self.shell, &pages, at, &folder)).into_response()
     }
 
-    /// A file of the site: a page, rendered, or any other file, as it is.
-    fn file(&self, file: &Path) -> Response {
+    /// A file of the site: a page, rendered, or any other file, as it is; `files` are the site's, for the
+    /// page's sidebar.
+    fn file(&self, file: &Path, files: &[PathBuf]) -> Response {
         let from = self.root.join(file);
         let read = |e: std::io::Error| {
             self.failed(&anyhow::Error::from(e).context(from.display().to_string()))
@@ -218,7 +202,13 @@ impl Server {
                     let page = self.renderer.render(&text);
                     let title = page.title.unwrap_or_else(|| Self::stem(file));
                     let at = file.parent().unwrap_or(Path::new(""));
-                    Html(self.shell.page(at, "", &title, &page.html)).into_response()
+                    let pages = self.pages(files);
+                    let nav = Nav {
+                        pages: &pages,
+                        current: file,
+                        headings: &page.headings,
+                    };
+                    Html(self.shell.page(at, "", &title, &page.html, &nav)).into_response()
                 }
                 Err(e) => read(e),
             };
@@ -245,14 +235,26 @@ impl Server {
             .into_owned()
     }
 
-    fn not_found(&self, path: &str) -> Response {
+    /// The site's pages, for a page's sidebar.
+    fn pages(&self, files: &[PathBuf]) -> Pages {
+        Pages::new(&self.root, files, &self.renderer)
+    }
+
+    /// The answer for a path the site has nothing at, with its pages to go to instead.
+    fn not_found(&self, path: &str, files: &[PathBuf]) -> Response {
         let body = format!(
             "<h1>Not found</h1>\n<p>There is no page at {}.</p>\n",
             Builder::escape(path)
         );
+        let pages = self.pages(files);
+        let nav = Nav {
+            pages: &pages,
+            current: Path::new(""),
+            headings: &[],
+        };
         (
             StatusCode::NOT_FOUND,
-            Html(self.shell.page(Path::new(""), "", "Not found", &body)),
+            Html(self.shell.page(Path::new(""), "", "Not found", &body, &nav)),
         )
             .into_response()
     }
@@ -269,8 +271,8 @@ impl Server {
             Path::new(""),
             "",
             "Error",
-            "<h1>Something went wrong</h1>
-",
+            "<h1>Something went wrong</h1>\n",
+            &Nav::none(),
         );
         (StatusCode::INTERNAL_SERVER_ERROR, Html(body)).into_response()
     }
@@ -387,6 +389,27 @@ mod tests {
                 .2
                 .contains(r#"<a href="x.html">X</a>"#)
         );
+    }
+
+    #[tokio::test]
+    async fn pages_and_folders_have_the_site_s_pages_beside_them() {
+        let site = Site::with(&[
+            ("docs/arch/README.md", b"# Architecture"),
+            ("docs/arch/dma.md", b"# DMA"),
+            ("docs/x.md", b"# X"),
+        ]);
+        let dma = site.get("/arch/dma.md").await.2;
+        assert!(
+            dma.contains(r#"<a href="/arch/dma.html" aria-current="page">DMA</a>"#),
+            "{dma}"
+        );
+        let arch = site.get("/arch/").await.2;
+        assert!(
+            arch.contains(r#"<a href="/arch/" aria-current="page">arch</a>"#),
+            "{arch}"
+        );
+        let missing = site.get("/nope.md").await.2;
+        assert!(missing.contains(r#"<a href="/x.html">X</a>"#), "{missing}");
     }
 
     #[tokio::test]
