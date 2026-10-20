@@ -1,13 +1,17 @@
 //! `git kb build`: a folder of Markdown written as a static site, a folder of files to open from disk or put on
 //! any host. Each page is written as HTML beside where its Markdown is, `arch/overview.md` as
 //! `arch/overview.html`, with its links to other pages made links to theirs, and every other file, such as an
-//! image, is copied as it is. What `.gitignore` and
+//! image, is copied as it is. Every folder with pages in it, or below it, gets an `index.html`: its
+//! `index.md`; or else a page that redirects to its `README.md`'s, as a forge shows a folder by its README;
+//! or else a list of its pages and folders. Links to such a folder go to its README's page itself.
+//! What `.gitignore` and
 //! `.kbignore` files ignore is left out: `.gitignore` for what git leaves out too, such as `target/`, and
 //! `.kbignore`, in the same form, for what only the site does. So is `.git`, git's own store, and links,
 //! which are neither followed nor copied.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use ignore::WalkBuilder;
@@ -22,6 +26,16 @@ pub struct Built {
     pub pages: usize,
     /// The other files copied.
     pub files: usize,
+    /// The folders given an `index.html` of their `README.md`, or of a list of what is in them.
+    pub folders: usize,
+}
+
+/// What is in a folder of the site, for its list: its pages, as their file's name and title, and the
+/// folders in it that have pages.
+#[derive(Debug, Default)]
+struct Folder {
+    pages: BTreeMap<String, String>,
+    folders: BTreeSet<String>,
 }
 
 /// Builds folders of Markdown as sites.
@@ -53,7 +67,12 @@ impl Builder {
         let folder = fs::canonicalize(folder).with_context(|| folder.display().to_string())?;
         Self::prepare(out, &folder)?;
         let out = fs::canonicalize(out).with_context(|| out.display().to_string())?;
-        let mut built = Built { pages: 0, files: 0 };
+        let mut built = Built {
+            pages: 0,
+            files: 0,
+            folders: 0,
+        };
+        let mut folders: BTreeMap<PathBuf, Folder> = BTreeMap::new();
 
         let skip = out.clone();
         let walk = WalkBuilder::new(&folder)
@@ -65,33 +84,47 @@ impl Builder {
             .filter_entry(move |entry| entry.path() != skip && entry.file_name() != ".git")
             .build();
 
+        // Every file first, so that each page knows, as it is rendered, which folders are shown by their
+        // README: those with one and without an index.md, each with its README's page.
+        let mut files = vec![];
         for entry in walk {
             let entry = entry?;
-            if !entry.file_type().is_some_and(|t| t.is_file()) {
-                continue;
+            if entry.file_type().is_some_and(|t| t.is_file()) {
+                files.push(entry.path().strip_prefix(&folder)?.to_path_buf());
             }
-            let from = entry.path();
-            let path = from.strip_prefix(&folder)?;
+        }
+        let readmes = Self::readmes(&files);
+
+        for path in &files {
+            let from = folder.join(path);
             let markdown = path
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("md"));
-            let to = out.join(if markdown {
+            let written = if markdown {
                 path.with_extension("html")
             } else {
-                path.to_path_buf()
-            });
+                path.clone()
+            };
+            let to = out.join(&written);
             if let Some(dir) = to.parent() {
                 fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
             }
             if markdown {
-                let text = fs::read_to_string(from).with_context(|| from.display().to_string())?;
-                fs::write(&to, self.page(&text, path)).with_context(|| to.display().to_string())?;
+                let text = fs::read_to_string(&from).with_context(|| from.display().to_string())?;
+                let (html, title) = self.page(&text, path, &readmes);
+                fs::write(&to, html).with_context(|| to.display().to_string())?;
                 debug!(page = %path.display(), "rendered");
                 built.pages += 1;
+                Self::file_under(&mut folders, &written, title);
             } else {
-                fs::copy(from, &to).with_context(|| to.display().to_string())?;
+                fs::copy(&from, &to).with_context(|| to.display().to_string())?;
                 debug!(file = %path.display(), "copied");
                 built.files += 1;
+            }
+        }
+        for (path, folder) in &folders {
+            if Self::index(&out, path, folder)? {
+                built.folders += 1;
             }
         }
         fs::write(
@@ -127,23 +160,121 @@ impl Builder {
             .with_context(|| out.display().to_string())
     }
 
-    /// A page's HTML document: the Markdown rendered, titled by its first heading, or else by its file's name.
-    fn page(&self, markdown: &str, path: &Path) -> String {
+    /// A page's HTML document, and its title: the Markdown rendered, titled by its first heading, or else by
+    /// its file's name.
+    fn page(
+        &self,
+        markdown: &str,
+        path: &Path,
+        readmes: &BTreeMap<PathBuf, String>,
+    ) -> (String, String) {
         let page = self
             .renderer
-            .render_with(markdown, &|dest| Self::moved(path, dest));
+            .render_with(markdown, &|dest| Self::moved(path, dest, readmes));
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
-        let title = Self::escape(page.title.as_deref().unwrap_or(&name));
+        let title = page.title.unwrap_or_else(|| name.into_owned());
+        (Self::document(&title, &page.html), title)
+    }
+
+    /// An HTML document with a title and a body.
+    fn document(title: &str, body: &str) -> String {
         format!(
-            "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n</head>\n<body>\n{}</body>\n</html>\n",
-            page.html
+            "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n</head>\n<body>\n{body}</body>\n</html>\n",
+            Self::escape(title)
         )
     }
 
+    /// A page filed under its folder, by the name of the HTML file it was written as and its title, and each
+    /// folder above it under the one above that, so that each has a list.
+    fn file_under(folders: &mut BTreeMap<PathBuf, Folder>, written: &Path, title: String) {
+        let folder = written.parent().unwrap_or(Path::new(""));
+        let name = written
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        folders
+            .entry(folder.to_path_buf())
+            .or_default()
+            .pages
+            .insert(name, title);
+        let mut below = folder;
+        while let Some(above) = below.parent() {
+            let name = below
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            folders
+                .entry(above.to_path_buf())
+                .or_default()
+                .folders
+                .insert(name);
+            below = above;
+        }
+    }
+
+    /// A folder's `index.html`, unless its `index.md` is it already: a page that redirects to its README's,
+    /// or else a list of its folders and its pages, by title. Answers whether it wrote one.
+    fn index(out: &Path, path: &Path, folder: &Folder) -> anyhow::Result<bool> {
+        let named = |name: &str| folder.pages.keys().find(|p| p.eq_ignore_ascii_case(name));
+        if named("index.html").is_some() {
+            return Ok(false);
+        }
+        let dir = out.join(path);
+        let index = dir.join("index.html");
+        if let Some(readme) = named("README.html") {
+            fs::write(&index, Self::redirect(&folder.pages[readme], readme))
+                .with_context(|| index.display().to_string())?;
+            debug!(folder = %path.display(), "redirected to its README");
+            return Ok(true);
+        }
+        let name = path
+            .file_name()
+            .map_or_else(|| "Contents".into(), |n| n.to_string_lossy().into_owned());
+        let items: String = folder
+            .folders
+            .iter()
+            .map(|f| {
+                format!(
+                    "<li><a href=\"{}/index.html\">{}/</a></li>\n",
+                    Self::href(f),
+                    Self::escape(f)
+                )
+            })
+            .chain(folder.pages.iter().map(|(file, title)| {
+                format!(
+                    "<li><a href=\"{}\">{}</a></li>\n",
+                    Self::href(file),
+                    Self::escape(title)
+                )
+            }))
+            .collect();
+        let body = format!("<h1>{}</h1>\n<ul>\n{items}</ul>\n", Self::escape(&name));
+        fs::write(&index, Self::document(&name, &body))
+            .with_context(|| index.display().to_string())?;
+        debug!(folder = %path.display(), "indexed");
+        Ok(true)
+    }
+
+    /// A file's name as a link to it: every character a URL holds as itself kept, and the rest as %XX.
+    fn href(name: &str) -> String {
+        name.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    char::from(b).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
+
     /// Where a link from a page goes in the site: a link to a page, `arch/overview.md#data`, to its HTML,
-    /// `arch/overview.html#data`; one from the site's top, `/arch/overview.md`, made relative to the page,
-    /// so that the site works from disk; and any other, to another site, an image or a folder, as it is.
-    fn moved(page: &Path, dest: &str) -> Option<String> {
+    /// `arch/overview.html#data`; one to a folder, `arch/`, to its README's page, when it is shown by its
+    /// README, or else to its `index.html`; one from the site's top,
+    /// `/arch/overview.md`, made relative to the page, so that the site works from disk; and any other, to
+    /// another site or to a file, as it is.
+    fn moved(page: &Path, dest: &str, readmes: &BTreeMap<PathBuf, String>) -> Option<String> {
         let (path, rest) = dest.split_at(dest.find(['#', '?']).unwrap_or(dest.len()));
         let elsewhere = path.starts_with("//")
             || path
@@ -154,10 +285,18 @@ impl Builder {
             && path
                 .get(path.len() - 3..)
                 .is_some_and(|end| end.eq_ignore_ascii_case(".md"));
-        if elsewhere || !markdown {
+        let folder = path.ends_with('/');
+        if elsewhere || !(markdown || folder) {
             return None;
         }
-        let html = format!("{}.html", &path[..path.len() - 3]);
+        let html = if folder {
+            let index = readmes
+                .get(&Self::folder_of(page, path))
+                .map_or("index.html", String::as_str);
+            format!("{path}{index}")
+        } else {
+            format!("{}.html", &path[..path.len() - 3])
+        };
         let html = match html.strip_prefix('/') {
             Some(from_top) => {
                 let depth = page.components().count().saturating_sub(1);
@@ -166,6 +305,77 @@ impl Builder {
             None => html,
         };
         Some(format!("{html}{rest}"))
+    }
+
+    /// The folder a link to a folder from a page names, from the site's top: `../algebra/` from
+    /// `arch/dma.md` is `algebra`.
+    fn folder_of(page: &Path, path: &str) -> PathBuf {
+        match path.strip_prefix('/') {
+            Some(from_top) => Self::tidy(Path::new(from_top)),
+            None => Self::tidy(&page.parent().unwrap_or(Path::new("")).join(path)),
+        }
+    }
+
+    /// The folders shown by their README, each with its README's page: those with a `README.md` and no
+    /// `index.md`, whatever the case of their letters.
+    fn readmes(files: &[PathBuf]) -> BTreeMap<PathBuf, String> {
+        let folder = |p: &PathBuf| p.parent().unwrap_or(Path::new("")).to_path_buf();
+        let indexed: BTreeSet<PathBuf> = files
+            .iter()
+            .filter(|p| Self::named(p, "index.md"))
+            .map(folder)
+            .collect();
+        files
+            .iter()
+            .filter(|p| Self::named(p, "README.md") && !indexed.contains(&folder(p)))
+            .map(|p| {
+                (
+                    folder(p),
+                    p.with_extension("html")
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                )
+            })
+            .collect()
+    }
+
+    /// A relative path with its `.` and `..` worked out, as `arch/../docs/./a` is `docs/a`.
+    fn tidy(path: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for part in path.components() {
+            match part {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                part => out.push(part),
+            }
+        }
+        out
+    }
+
+    /// Whether a file is named so, whatever the case of its letters.
+    fn named(path: &Path, name: &str) -> bool {
+        path.file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+    }
+
+    /// A page that sends whoever opens it to another in its folder: by the HTML itself, as a site on disk or
+    /// on a host such as GitHub Pages cannot redirect, and naming that page for search.
+    fn redirect(title: &str, to: &str) -> String {
+        let to = Self::escape(&Self::href(to));
+        format!(
+            concat!(
+                "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n",
+                "<link rel=\"canonical\" href=\"{to}\">\n",
+                "<meta http-equiv=\"refresh\" content=\"0; url={to}\">\n</head>\n<body>\n",
+                "<p>This page is at <a href=\"{to}\">{to}</a>.</p>\n</body>\n</html>\n"
+            ),
+            title = Self::escape(title),
+            to = to
+        )
     }
 
     /// Text as HTML, with the characters that would read as markup escaped.
@@ -235,10 +445,22 @@ mod tests {
         let built = Builder::new()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        assert_eq!(built, Built { pages: 2, files: 0 });
+        assert_eq!(
+            built,
+            Built {
+                pages: 2,
+                files: 0,
+                folders: 1
+            }
+        );
         assert_eq!(
             tree.files("site"),
-            [".git-kb-site", "arch/overview.html", "index.html"]
+            [
+                ".git-kb-site",
+                "arch/index.html",
+                "arch/overview.html",
+                "index.html"
+            ]
         );
         let home = tree.read("site/index.html");
         assert!(home.starts_with("<!doctype html>"), "{home}");
@@ -258,15 +480,20 @@ mod tests {
             ("//example.org/a.md", None),
             ("mailto:a@b.md", None),
             ("img/chip.png", None),
-            ("arch/", None),
+            ("arch/", Some("arch/index.html")),
+            ("../", Some("../index.html")),
             ("#section", None),
             (".md", None),
             ("€a", None),
         ] {
-            assert_eq!(Builder::moved(page, dest).as_deref(), moved, "{dest}");
+            assert_eq!(
+                Builder::moved(page, dest, &BTreeMap::new()).as_deref(),
+                moved,
+                "{dest}"
+            );
         }
         assert_eq!(
-            Builder::moved(Path::new("index.md"), "/a.md").as_deref(),
+            Builder::moved(Path::new("index.md"), "/a.md", &BTreeMap::new()).as_deref(),
             Some("a.html")
         );
     }
@@ -329,7 +556,14 @@ mod tests {
         let built = Builder::new()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        assert_eq!(built, Built { pages: 1, files: 1 });
+        assert_eq!(
+            built,
+            Built {
+                pages: 1,
+                files: 1,
+                folders: 1
+            }
+        );
         assert_eq!(fs::read(tree.path("site/img/chip.png")).unwrap(), image);
     }
 
@@ -344,7 +578,10 @@ mod tests {
         Builder::new()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        assert_eq!(tree.files("site"), [".git-kb-site", ".gitignore", "a.html"]);
+        assert_eq!(
+            tree.files("site"),
+            [".git-kb-site", ".gitignore", "a.html", "index.html"]
+        );
     }
 
     #[test]
@@ -367,7 +604,9 @@ mod tests {
                 ".kbignore",
                 "a.html",
                 "arch/.kbignore",
-                "arch/c.html"
+                "arch/c.html",
+                "arch/index.html",
+                "index.html"
             ]
         );
     }
@@ -384,7 +623,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             tree.files("site"),
-            [".git-kb-site", ".notes.html", "a.html"]
+            [".git-kb-site", ".notes.html", "a.html", "index.html"]
         );
     }
 
@@ -398,8 +637,18 @@ mod tests {
         let built = builder
             .build(&tree.path("docs"), &tree.path("docs/site"))
             .unwrap();
-        assert_eq!(built, Built { pages: 1, files: 0 });
-        assert_eq!(tree.files("docs/site"), [".git-kb-site", "a.html"]);
+        assert_eq!(
+            built,
+            Built {
+                pages: 1,
+                files: 0,
+                folders: 1
+            }
+        );
+        assert_eq!(
+            tree.files("docs/site"),
+            [".git-kb-site", "a.html", "index.html"]
+        );
     }
 
     #[test]
@@ -412,7 +661,7 @@ mod tests {
         Builder::new()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        assert_eq!(tree.files("site"), [".git-kb-site", "a.html"]);
+        assert_eq!(tree.files("site"), [".git-kb-site", "a.html", "index.html"]);
     }
 
     #[test]
@@ -433,5 +682,112 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("holds the folder"), "{error}");
         assert_eq!(tree.read("docs/a.md"), "# A");
+    }
+
+    #[test]
+    fn a_folder_s_index_md_is_its_index() {
+        let tree = Tree::with(&[
+            ("docs/index.md", b"# Home"),
+            ("docs/README.md", b"# Readme"),
+        ]);
+        let built = Builder::new()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        assert_eq!(built.folders, 0);
+        assert!(tree.read("site/index.html").contains("<title>Home</title>"));
+    }
+
+    #[test]
+    fn without_one_a_folder_s_index_sends_to_its_readme() {
+        let tree = Tree::with(&[
+            ("docs/arch/README.md", b"# Architecture"),
+            (
+                "docs/arch/dma.md",
+                b"# DMA\n\n[Read me](README.md), [the folder](./), [from the top](/arch/).",
+            ),
+        ]);
+        let built = Builder::new()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        assert_eq!(
+            built,
+            Built {
+                pages: 2,
+                files: 0,
+                folders: 2
+            }
+        );
+        assert!(
+            tree.read("site/arch/README.html")
+                .contains("<h1 id=\"architecture\">Architecture</h1>")
+        );
+        let index = tree.read("site/arch/index.html");
+        for wanted in [
+            "<title>Architecture</title>",
+            r#"<link rel="canonical" href="README.html">"#,
+            r#"<meta http-equiv="refresh" content="0; url=README.html">"#,
+            r#"<a href="README.html">"#,
+        ] {
+            assert!(index.contains(wanted), "{wanted} missing from {index}");
+        }
+        let dma = tree.read("site/arch/dma.html");
+        assert!(dma.contains(r#"href="README.html""#), "{dma}");
+        assert!(dma.contains(r#"href="./README.html""#), "{dma}");
+        assert!(dma.contains(r#"href="../arch/README.html""#), "{dma}");
+        assert!(
+            tree.read("site/index.html")
+                .contains(r#"href="arch/index.html""#)
+        );
+    }
+
+    #[test]
+    fn with_an_index_md_a_readme_is_a_page_of_its_own() {
+        let tree = Tree::with(&[
+            ("docs/index.md", b"# Home\n\n[Read me](README.md)"),
+            ("docs/README.md", b"# Readme"),
+        ]);
+        Builder::new()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        assert!(
+            tree.read("site/README.html")
+                .contains("<h1 id=\"readme\">Readme</h1>")
+        );
+        assert!(
+            tree.read("site/index.html")
+                .contains(r#"href="README.html""#)
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_folder_shown_by_its_readme_goes_to_the_readme() {
+        let readmes = BTreeMap::from([
+            (PathBuf::from("arch"), "README.html".to_string()),
+            (PathBuf::new(), "readme.html".to_string()),
+        ]);
+        let page = Path::new("arch/dma.md");
+        for (dest, moved) in [
+            ("./", "./README.html"),
+            ("../", "../readme.html"),
+            ("../algebra/", "../algebra/index.html"),
+            ("/arch/", "../arch/README.html"),
+            ("README.md#top", "README.html#top"),
+        ] {
+            assert_eq!(
+                Builder::moved(page, dest, &readmes).as_deref(),
+                Some(moved),
+                "{dest}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_folder_without_pages_has_no_index() {
+        let tree = Tree::with(&[("docs/a.md", b"# A"), ("docs/img/chip.png", b"png")]);
+        Builder::new()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        assert!(!tree.path("site/img/index.html").exists());
+        assert!(!tree.read("site/index.html").contains("img/"));
     }
 }

@@ -51,7 +51,8 @@ fn main() -> ExitCode {
             let out = &config.build.out;
             match Builder::new().build(&config.root, out) {
                 Ok(built) => {
-                    info!(root = %config.root.display(), pages = built.pages, files = built.files, out = %out.display(), "built");
+                    info!(root = %config.root.display(), pages = built.pages, files = built.files,
+                        folders = built.folders, out = %out.display(), "built");
                 }
                 Err(e) => {
                     error!("{e:#}");
