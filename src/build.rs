@@ -33,9 +33,9 @@ pub struct Built {
 /// What is in a folder of the site, for its list: its pages, as their file's name and title, and the
 /// folders in it that have pages.
 #[derive(Debug, Default)]
-struct Folder {
-    pages: BTreeMap<String, String>,
-    folders: BTreeSet<String>,
+pub(crate) struct Folder {
+    pub(crate) pages: BTreeMap<String, String>,
+    pub(crate) folders: BTreeSet<String>,
 }
 
 /// Builds folders of Markdown as sites.
@@ -74,25 +74,9 @@ impl Builder {
         };
         let mut folders: BTreeMap<PathBuf, Folder> = BTreeMap::new();
 
-        let skip = out.clone();
-        let walk = WalkBuilder::new(&folder)
-            .standard_filters(false)
-            .git_ignore(true)
-            .parents(true)
-            .require_git(false)
-            .add_custom_ignore_filename(Self::IGNORE)
-            .filter_entry(move |entry| entry.path() != skip && entry.file_name() != ".git")
-            .build();
-
         // Every file first, so that each page knows, as it is rendered, which folders are shown by their
         // README: those with one and without an index.md, each with its README's page.
-        let mut files = vec![];
-        for entry in walk {
-            let entry = entry?;
-            if entry.file_type().is_some_and(|t| t.is_file()) {
-                files.push(entry.path().strip_prefix(&folder)?.to_path_buf());
-            }
-        }
+        let files = Self::files(&folder, Some(&out))?;
         let readmes = Self::readmes(&files);
 
         for path in &files {
@@ -132,6 +116,31 @@ impl Builder {
             "Written by git kb build, which replaces everything here when it builds again.\n",
         )?;
         Ok(built)
+    }
+
+    /// The files of a folder that are its site's, by their paths in it: all but what `.gitignore` and
+    /// `.kbignore` files ignore, in it and above it, `.git`, links, and `skip`, a folder inside it to leave
+    /// out, as the output folder is. The server serves these, and no others.
+    pub(crate) fn files(folder: &Path, skip: Option<&Path>) -> anyhow::Result<Vec<PathBuf>> {
+        let skip = skip.map(Path::to_path_buf);
+        let walk = WalkBuilder::new(folder)
+            .standard_filters(false)
+            .git_ignore(true)
+            .parents(true)
+            .require_git(false)
+            .add_custom_ignore_filename(Self::IGNORE)
+            .filter_entry(move |entry| {
+                skip.as_deref() != Some(entry.path()) && entry.file_name() != ".git"
+            })
+            .build();
+        let mut files = vec![];
+        for entry in walk {
+            let entry = entry?;
+            if entry.file_type().is_some_and(|t| t.is_file()) {
+                files.push(entry.path().strip_prefix(folder)?.to_path_buf());
+            }
+        }
+        Ok(files)
     }
 
     /// The output folder, ready to write: made when it is missing, and emptied when a build wrote it.
@@ -177,7 +186,7 @@ impl Builder {
     }
 
     /// An HTML document with a title and a body.
-    fn document(title: &str, body: &str) -> String {
+    pub(crate) fn document(title: &str, body: &str) -> String {
         format!(
             "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n</head>\n<body>\n{body}</body>\n</html>\n",
             Self::escape(title)
@@ -229,6 +238,14 @@ impl Builder {
             debug!(folder = %path.display(), "redirected to its README");
             return Ok(true);
         }
+        fs::write(&index, Self::listing(path, folder))
+            .with_context(|| index.display().to_string())?;
+        debug!(folder = %path.display(), "indexed");
+        Ok(true)
+    }
+
+    /// A folder's list: its folders, each a link to its `index.html`, and then its pages, by title.
+    pub(crate) fn listing(path: &Path, folder: &Folder) -> String {
         let name = path
             .file_name()
             .map_or_else(|| "Contents".into(), |n| n.to_string_lossy().into_owned());
@@ -251,10 +268,7 @@ impl Builder {
             }))
             .collect();
         let body = format!("<h1>{}</h1>\n<ul>\n{items}</ul>\n", Self::escape(&name));
-        fs::write(&index, Self::document(&name, &body))
-            .with_context(|| index.display().to_string())?;
-        debug!(folder = %path.display(), "indexed");
-        Ok(true)
+        Self::document(&name, &body)
     }
 
     /// A file's name as a link to it: every character a URL holds as itself kept, and the rest as %XX.
@@ -357,7 +371,7 @@ impl Builder {
     }
 
     /// Whether a file is named so, whatever the case of its letters.
-    fn named(path: &Path, name: &str) -> bool {
+    pub(crate) fn named(path: &Path, name: &str) -> bool {
         path.file_name()
             .is_some_and(|n| n.eq_ignore_ascii_case(name))
     }
@@ -379,7 +393,7 @@ impl Builder {
     }
 
     /// Text as HTML, with the characters that would read as markup escaped.
-    fn escape(text: &str) -> String {
+    pub(crate) fn escape(text: &str) -> String {
         text.replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")

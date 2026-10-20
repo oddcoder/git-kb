@@ -6,6 +6,7 @@ use clap::Parser;
 use git_kb::build::Builder;
 use git_kb::cli::{Cli, Command};
 use git_kb::config::Config;
+use git_kb::serve::Server;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -45,7 +46,18 @@ fn main() -> ExitCode {
     match command {
         Command::Serve { .. } => {
             let address = SocketAddr::new(config.serve.host, config.serve.port);
-            info!(root = %config.root.display(), %address, "would serve");
+            let served = tokio::runtime::Runtime::new()
+                .map_err(anyhow::Error::from)
+                .and_then(|runtime| {
+                    // Until Ctrl-C, after which the requests begun are answered, and no more.
+                    runtime.block_on(Server::new(config.root.clone()).run(address, async {
+                        tokio::signal::ctrl_c().await.unwrap_or(());
+                    }))
+                });
+            if let Err(e) = served {
+                error!("{e:#}");
+                return ExitCode::FAILURE;
+            }
         }
         Command::Build { .. } => {
             let out = &config.build.out;
