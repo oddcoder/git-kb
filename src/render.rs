@@ -4,8 +4,17 @@
 //!
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
-use pulldown_cmark::{CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{
+    CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd, html,
+};
+use syntect::html::{ClassStyle, ClassedHTMLGenerator};
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
+
+/// The syntaxes highlighter is loaded once and shared by every renderer.
+static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 
 /// A page rendered: its HTML, and what is known of it from its headings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,15 +35,38 @@ pub struct Heading {
     pub text: String,
 }
 
+impl Page {
+    /// A page from its events, as rendered, and its headings.
+    fn new(events: Vec<Event>, headings: Vec<Heading>) -> Self {
+        let mut html = String::new();
+        html::push_html(&mut html, events.into_iter());
+        let title = headings
+            .iter()
+            .find(|h| h.level == HeadingLevel::H1 && !h.text.is_empty())
+            .map(|h| h.text.clone());
+        Self {
+            html,
+            title,
+            headings,
+        }
+    }
+}
+
 impl Heading {
-    /// The text of a heading's events, without their markup: text and code, but not raw HTML.
-    fn plain_text(events: &[Event]) -> String {
-        events.iter().fold(String::new(), |mut s, e| {
-            if let Event::Text(t) | Event::Code(t) = e {
-                s.push_str(t);
-            }
-            s
-        })
+    /// The heading's events, with its id: its start, what is inside it, and its end.
+    fn events<'a>(
+        &self,
+        classes: Vec<CowStr<'a>>,
+        attrs: Vec<(CowStr<'a>, Option<CowStr<'a>>)>,
+        inner: Vec<Event<'a>>,
+    ) -> Vec<Event<'a>> {
+        let start = Tag::Heading {
+            level: self.level,
+            id: Some(self.id.clone().into()),
+            classes,
+            attrs,
+        };
+        Renderer::wrap(start, inner, TagEnd::Heading(self.level))
     }
 }
 
@@ -77,48 +109,100 @@ impl Renderer {
         let mut out = vec![];
         let mut events = Parser::new_ext(markdown, self.options);
         while let Some(event) = events.next() {
-            let Event::Start(Tag::Heading {
-                level,
-                id,
-                classes,
-                attrs,
-            }) = event
-            else {
-                out.push(event);
-                continue;
-            };
+            match event {
+                Event::Start(Tag::Heading {
+                    level,
+                    id,
+                    classes,
+                    attrs,
+                }) => {
+                    let inner = Self::inside(&mut events);
+                    let heading = ids.heading(level, id, &inner);
+                    out.extend(heading.events(classes, attrs, inner));
+                    headings.push(heading);
+                }
+                Event::Start(Tag::CodeBlock(kind)) => {
+                    let inner = Self::inside(&mut events);
+                    out.extend(Self::code_block(kind, inner));
+                }
+                event => out.push(event),
+            }
+        }
+        Page::new(out, headings)
+    }
 
-            let inner: Vec<Event> = events
-                .by_ref()
-                .take_while(|e| !matches!(e, Event::End(TagEnd::Heading(_))))
-                .collect();
-            let text = Heading::plain_text(&inner);
-            let id = ids.claim(id, &text);
-            headings.push(Heading {
-                level,
-                id: id.to_string(),
-                text: text.trim().to_string(),
-            });
-            out.push(Event::Start(Tag::Heading {
-                level,
-                id: Some(id),
-                classes,
-                attrs,
-            }));
-            out.extend(inner);
-            out.push(Event::End(TagEnd::Heading(level)));
+    /// A code block: highlighted, when its language is known, or else as it was, for pulldown-cmark to
+    /// escape.
+    fn code_block<'a>(kind: CodeBlockKind<'a>, inner: Vec<Event<'a>>) -> Vec<Event<'a>> {
+        let lang = match &kind {
+            CodeBlockKind::Fenced(info) => Self::lang(info).to_string(),
+            CodeBlockKind::Indented => String::new(),
+        };
+        match Self::highlight(&lang, &Self::plain_text(&inner)) {
+            Some(html) => vec![Event::Html(
+                format!(r#"<pre><code class="language-{lang}">{html}</code></pre>"#).into(),
+            )],
+            None => Self::wrap(Tag::CodeBlock(kind), inner, TagEnd::CodeBlock),
         }
-        let mut page = String::new();
-        html::push_html(&mut page, out.into_iter());
-        let title = headings
-            .iter()
-            .find(|h| h.level == HeadingLevel::H1 && !h.text.is_empty())
-            .map(|h| h.text.clone());
-        Page {
-            html: page,
-            title,
-            headings,
+    }
+
+    /// The events inside a tag that has just started, up to its end, which is taken too but not
+    /// returned.
+    fn inside<'a>(events: &mut impl Iterator<Item = Event<'a>>) -> Vec<Event<'a>> {
+        let mut depth = 0usize;
+        events
+            .take_while(|e| match e {
+                Event::Start(_) => {
+                    depth += 1;
+                    true
+                }
+                Event::End(_) if depth == 0 => false,
+                Event::End(_) => {
+                    depth -= 1;
+                    true
+                }
+                _ => true,
+            })
+            .collect()
+    }
+
+    /// A tag's events again: its start, what is inside it, and its end.
+    fn wrap<'a>(start: Tag<'a>, inner: Vec<Event<'a>>, end: TagEnd) -> Vec<Event<'a>> {
+        let mut events = Vec::with_capacity(inner.len() + 2);
+        events.push(Event::Start(start));
+        events.extend(inner);
+        events.push(Event::End(end));
+        events
+    }
+
+    /// The text of some events, without their markup: text and code, but not raw HTML.
+    fn plain_text(events: &[Event]) -> String {
+        events.iter().fold(String::new(), |mut s, e| {
+            if let Event::Text(t) | Event::Code(t) = e {
+                s.push_str(t);
+            }
+            s
+        })
+    }
+
+    /// Code as HTML, its tokens in spans whose classes name what they are, as `hl-keyword` and
+    /// `hl-string`, for a style sheet to color; or none, when the language is not known. A language
+    /// is known by its name or its files' extension, as `rust` or `rs`.
+    fn highlight(lang: &str, code: &str) -> Option<String> {
+        const CLASSES: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "hl-" };
+        let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+        let syntax = syntaxes.find_syntax_by_token(lang)?;
+        let mut html = ClassedHTMLGenerator::new_with_class_style(syntax, syntaxes, CLASSES);
+        for line in LinesWithEndings::from(code) {
+            html.parse_html_for_line_which_includes_newline(line).ok()?;
         }
+        Some(html.finalize())
+    }
+
+    /// A fence's language: the first word of its info, so that what follows it, as in
+    /// ```` ```rust ignore ````, is left for other uses.
+    fn lang(info: &str) -> &str {
+        info.split_whitespace().next().unwrap_or("")
     }
 }
 
@@ -130,12 +214,23 @@ struct Ids {
 }
 
 impl Ids {
+    /// A heading at a level, from what is inside it: its text, and its id, claimed for it.
+    fn heading(&mut self, level: HeadingLevel, chosen: Option<CowStr>, inner: &[Event]) -> Heading {
+        let text = Renderer::plain_text(inner);
+        let id = self.claim(chosen, &text);
+        Heading {
+            level,
+            id,
+            text: text.trim().to_string(),
+        }
+    }
+
     /// A heading's id: the one its `{#id}` chose, as it is, or else a slug of its text, numbered when the slug is
     /// taken, as GitHub numbers them: `intro`, `intro-1`, `intro-2`.
-    fn claim<'a>(&mut self, chosen: Option<CowStr<'a>>, text: &str) -> CowStr<'a> {
+    fn claim(&mut self, chosen: Option<CowStr>, text: &str) -> String {
         if let Some(id) = chosen {
             *self.seen.entry(id.to_string()).or_default() += 1;
-            return id;
+            return id.to_string();
         }
         let base = Self::slug(text);
         let mut id = base.clone();
@@ -146,7 +241,7 @@ impl Ids {
         }
         *self.seen.entry(base).or_default() += 1;
         self.seen.entry(id.clone()).or_default();
-        id.into()
+        id
     }
 
     /// A GitHub-style slug: lowercase, with letters, digits, `-` and `_` kept, spaces as `-`, and the rest dropped.
@@ -249,6 +344,63 @@ mod tests {
         ] {
             assert!(html.contains(wanted), "{wanted} missing from {html}");
         }
+    }
+
+    #[test]
+    fn code_in_a_known_language_is_highlighted() {
+        let html = Renderer::new()
+            .render("```rust\nfn main() { let a = b < c; }\n```")
+            .html;
+        assert!(
+            html.starts_with(r#"<pre><code class="language-rust">"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="hl-storage hl-type hl-function hl-rust">fn</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("&lt;"),
+            "the < in the code is escaped: {html}"
+        );
+    }
+
+    #[test]
+    fn a_language_is_known_by_its_extension_too() {
+        assert!(Renderer::highlight("rs", "fn main() {}").is_some());
+        assert!(Renderer::highlight("rust", "fn main() {}").is_some());
+        assert_eq!(Renderer::highlight("no-such-language", "x"), None);
+    }
+
+    #[test]
+    fn code_in_an_unknown_language_is_only_escaped() {
+        let html = Renderer::new()
+            .render("```no-such-language\na < b && c\n```")
+            .html;
+        assert_eq!(
+            html,
+            "<pre><code class=\"language-no-such-language\">a &lt; b &amp;&amp; c\n</code></pre>\n"
+        );
+    }
+
+    #[test]
+    fn only_the_first_word_of_a_fence_names_its_language() {
+        let html = Renderer::new()
+            .render("```rust ignore\nfn f() {}\n```")
+            .html;
+        assert!(
+            html.starts_with(r#"<pre><code class="language-rust">"#),
+            "{html}"
+        );
+        assert!(html.contains("hl-"), "{html}");
+    }
+
+    #[test]
+    fn indented_code_is_only_escaped() {
+        assert_eq!(
+            Renderer::new().render("    a < b\n").html,
+            "<pre><code>a &lt; b\n</code></pre>\n"
+        );
     }
 
     #[test]

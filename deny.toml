@@ -4,6 +4,9 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-app
 
 [licenses]
 allow = ["Apache-2.0", "MIT"]
+exceptions = [
+    { crate = "unicode-ident", allow = ["Unicode-3.0"] },
+]
 unused-allowed-license = "allow"
 # A new license arriving through a test-only dependency should break here, rather than
 # on the day that dependency graduates into a real one.
