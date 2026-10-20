@@ -32,9 +32,9 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::get;
 use percent_encoding::percent_decode_str;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::{debug, error, info, warn};
 
 use crate::build::{Builder, Folder};
@@ -55,6 +55,8 @@ pub struct Server {
     repo: Option<Repo>,
     /// The site's changes, told to open pages.
     changes: broadcast::Sender<()>,
+    /// Whether it is stopping, told to open pages' event streams, which would otherwise never end.
+    stopping: watch::Sender<bool>,
 }
 
 /// What a request is answered from: the site's files, on disk or at a commit, and the shell of its pages.
@@ -81,6 +83,7 @@ impl Server {
             renderer: Renderer::new(),
             shell,
             changes: broadcast::channel(16).0,
+            stopping: watch::channel(false).0,
         }
     }
 
@@ -112,8 +115,14 @@ impl Server {
         let _live = Live::watch(&self.root, self.changes.clone())
             .inspect_err(|e| warn!("not watching for changes: {e:#}"))
             .ok();
+        let stopping = self.stopping.clone();
         axum::serve(listener, Arc::new(self).router())
-            .with_graceful_shutdown(shutdown)
+            .with_graceful_shutdown(async move {
+                shutdown.await;
+                info!("stopping");
+                // The pages' event streams end, so that the requests begun do.
+                stopping.send_replace(true);
+            })
             .await?;
         info!("stopped");
         Ok(())
@@ -136,11 +145,20 @@ impl Server {
             .with_state(self)
     }
 
-    /// The site's changes, as events, one each, for as long as the page listens.
+    /// The site's changes, as events, one each, for as long as the page listens, or until the server stops.
     fn events(&self) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>> + use<>> {
-        let changes = BroadcastStream::new(self.changes.subscribe())
-            .filter_map(|change| change.ok().map(|()| Ok(Event::default().data("changed"))));
-        Sse::new(changes).keep_alive(KeepAlive::default())
+        let changes = BroadcastStream::new(self.changes.subscribe()).filter_map(|change| {
+            change
+                .ok()
+                .map(|()| Some(Ok(Event::default().data("changed"))))
+        });
+        let stopped = WatchStream::new(self.stopping.subscribe())
+            .filter_map(|stopping| stopping.then_some(None));
+        let events = changes
+            .merge(stopped)
+            .take_while(Option::is_some)
+            .filter_map(|event| event);
+        Sse::new(events).keep_alive(KeepAlive::default())
     }
 
     /// The answer to a request: for a path of the site, as it is or at a commit, or for one of git-kb's files.
@@ -872,6 +890,23 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(&event[..], b"data: changed\n\n");
+    }
+
+    #[tokio::test]
+    async fn open_pages_stop_listening_when_the_server_stops() {
+        let site = Site::with(&[("docs/a.md", b"# A")]);
+        let server = Arc::new(Server::new(site.docs.clone(), None));
+        let response = Arc::clone(&server)
+            .router()
+            .oneshot(Request::get("/_events").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        server.stopping.send_replace(true);
+        let mut events = response.into_body().into_data_stream();
+        let end = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
+            .await
+            .expect("the stream ends, as the server could not stop while it is open");
+        assert!(end.is_none(), "{end:?}");
     }
 
     #[tokio::test]

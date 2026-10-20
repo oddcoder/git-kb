@@ -49,12 +49,17 @@ fn main() -> ExitCode {
             let served = tokio::runtime::Runtime::new()
                 .map_err(anyhow::Error::from)
                 .and_then(|runtime| {
-                    // Until Ctrl-C, after which the requests begun are answered, and no more.
+                    // Until Ctrl-C, after which the requests begun are answered, and no more; or, at a
+                    // second, at once.
                     runtime.block_on(
                         Server::new(config.root.clone(), config.title.clone())
                             .looking(config.look.clone())
                             .run(address, async {
                                 tokio::signal::ctrl_c().await.unwrap_or(());
+                                tokio::spawn(async {
+                                    tokio::signal::ctrl_c().await.unwrap_or(());
+                                    std::process::exit(130);
+                                });
                             }),
                     )
                 });
