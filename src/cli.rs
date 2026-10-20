@@ -22,7 +22,7 @@ pub enum Command {
     /// Serve a folder of Markdown as a site to read
     #[command(display_name = "git-kb")]
     Serve {
-        /// The folder to serve
+        /// A folder to find git-kb.toml from, which says what to serve; or, without one, the folder to serve
         #[arg(default_value = ".")]
         folder: PathBuf,
     },
@@ -30,7 +30,7 @@ pub enum Command {
     /// written where git-kb.toml says.
     #[command(display_name = "git-kb")]
     Build {
-        /// The folder to build
+        /// A folder to find git-kb.toml from, which says what to build; or, without one, the folder to build
         #[arg(default_value = ".")]
         folder: PathBuf,
     },

@@ -1,8 +1,12 @@
-//! `git-kb.toml`: how a folder of Markdown is served and built. It sits in the folder or any folder above
-//! it, up to the top of its git repository, and the nearest one is used. Without one, every setting is its
-//! default. Paths in it are relative to the folder it is in.
+//! `git-kb.toml`: which folder of Markdown is shown, and how it is served and built. It sits in the folder
+//! or any folder above it, up to the top of its git repository, and the nearest one is used. Without one,
+//! the folder itself is shown, and every setting is its default. Paths in it are relative to the folder it
+//! is in.
 //!
 //! ```toml
+//! root = "docs"          # the folder of Markdown; the file's own by default. Before any [table], as
+//!                        # TOML has it.
+//!
 //! [serve]
 //! host = "127.0.0.1"     # the address to listen on; only this machine by default
 //! port = 8000
@@ -19,11 +23,23 @@ use serde::Deserialize;
 use tracing::{debug, trace};
 
 /// The settings for a folder of Markdown.
-#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// The folder of Markdown shown, as a full path once read.
+    pub root: PathBuf,
     pub serve: ServeConfig,
     pub build: BuildConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            root: ".".into(),
+            serve: ServeConfig::default(),
+            build: BuildConfig::default(),
+        }
+    }
 }
 
 /// How the folder is served.
@@ -86,7 +102,7 @@ impl Config {
             }
         }
         let mut config = Self::default();
-        config.resolve(folder);
+        config.resolve(folder)?;
         Ok((config, None))
     }
 
@@ -99,14 +115,20 @@ impl Config {
         let in_file = || file.display().to_string();
         let text = std::fs::read_to_string(file).with_context(in_file)?;
         let mut config: Self = toml::from_str(&text).with_context(in_file)?;
-        config.resolve(file.parent().unwrap_or(Path::new("")));
+        config
+            .resolve(file.parent().unwrap_or(Path::new("")))
+            .with_context(in_file)?;
         debug!(file = %file.display(), ?config, "read settings");
         Ok(config)
     }
 
     /// Its paths taken against a folder.
-    fn resolve(&mut self, base: &Path) {
+    fn resolve(&mut self, base: &Path) -> anyhow::Result<()> {
+        let root = base.join(&self.root);
+        self.root = std::fs::canonicalize(&root)
+            .with_context(|| format!("the root folder, {}", root.display()))?;
         self.build.out = base.join(&self.build.out);
+        Ok(())
     }
 }
 
@@ -226,5 +248,36 @@ mod tests {
             let tree = Tree::with(&[("git-kb.toml", text)]);
             assert!(Config::find(&tree.path("")).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn without_a_file_the_folder_is_the_root() {
+        let tree = Tree::with(&[(".git/HEAD", ""), ("docs/a.md", "")]);
+        let (config, _) = Config::find(&tree.path("docs")).unwrap();
+        assert_eq!(config.root, tree.path("docs"));
+    }
+
+    #[test]
+    fn the_root_is_the_file_s_folder_or_the_one_it_names() {
+        let tree = Tree::with(&[("git-kb.toml", ""), ("docs/arch/a.md", "")]);
+        assert_eq!(
+            Config::find(&tree.path("docs/arch")).unwrap().0.root,
+            tree.path("")
+        );
+        let tree = Tree::with(&[("git-kb.toml", "root = \"docs\"\n"), ("docs/arch/a.md", "")]);
+        assert_eq!(
+            Config::find(&tree.path("docs/arch")).unwrap().0.root,
+            tree.path("docs")
+        );
+    }
+
+    #[test]
+    fn a_root_that_is_not_there_is_an_error() {
+        let tree = Tree::with(&[("git-kb.toml", "root = \"missing\"\n")]);
+        let error = format!("{:#}", Config::find(&tree.path("")).unwrap_err());
+        assert!(
+            error.contains("the root folder") && error.contains("missing"),
+            "{error}"
+        );
     }
 }

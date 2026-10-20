@@ -45,13 +45,13 @@ fn main() -> ExitCode {
     match command {
         Command::Serve { .. } => {
             let address = SocketAddr::new(config.serve.host, config.serve.port);
-            info!(folder = %folder.display(), %address, "would serve");
+            info!(root = %config.root.display(), %address, "would serve");
         }
         Command::Build { .. } => {
             let out = &config.build.out;
-            match Builder::new().build(&folder, out) {
+            match Builder::new().build(&config.root, out) {
                 Ok(built) => {
-                    info!(pages = built.pages, files = built.files, out = %out.display(), "built");
+                    info!(root = %config.root.display(), pages = built.pages, files = built.files, out = %out.display(), "built");
                 }
                 Err(e) => {
                     error!("{e:#}");
