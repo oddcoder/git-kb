@@ -9,6 +9,79 @@
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 
+git-kb shows a folder of Markdown in a git repository as a site to read. Pages link to each other as they are written, folders are listed or shown by their `index.md` or `README.md`, and every page has a sidebar of its headings and the site's pages. It serves the site while you write, and pages reload as you save. It also builds the site as a static folder of HTML that you can open from disk or put on any host, such as GitHub Pages.
+
+## Installing
+
+You need:
+
+- **Rust**, through [rustup](https://rustup.rs). The repository pins the toolchain it builds with, and rustup installs it the first time you build.
+- **Node.js** with npm, from [nodejs.org](https://nodejs.org) or your package manager. The build compiles the pages' TypeScript with the TypeScript and esbuild versions in `web/package.json`. It installs them under `target/web` the first time.
+
+Then install from GitHub:
+
+```sh
+cargo install --locked --git https://github.com/oddcoder/git-kb
+```
+
+Or install from a clone:
+
+```sh
+git clone https://github.com/oddcoder/git-kb
+cd git-kb
+cargo install --locked --path .
+```
+
+Either way, `cargo install` puts `git-kb` in `~/.cargo/bin`, which should be on your `PATH`. Because the binary is named `git-kb`, git also runs it as `git kb`.
+
+## Using
+
+Run it in the repository, or in any folder of Markdown:
+
+```sh
+git kb serve           # serves the site at http://127.0.0.1:8000/
+git kb build           # writes the site into target/git-kb/
+git kb serve docs      # the same, starting from the folder docs
+```
+
+Each command takes a folder, `.` by default. git-kb looks for a `git-kb.toml` file in that folder and in each folder above it, up to the top of the repository. Without one, it shows the folder itself with every setting at its default. `git kb -h` lists the commands. `git kb --help` doesn't work, because git turns it into a request for a manual page.
+
+What `.gitignore` files ignore is never shown or built. To leave out more, such as drafts, list it in a `.kbignore` file, which works like `.gitignore`.
+
+## Settings
+
+Every setting in `git-kb.toml` is optional. Paths are relative to the file:
+
+```toml
+root = "docs"                     # the folder of Markdown; the file's own folder by default
+title = "pentasil"                # the site's name, in its bar and its pages' titles; the root folder's by default
+url = "https://foobar.xyz/docs/"  # where the built site lives, for its pages' canonical addresses
+
+[serve]
+host = "127.0.0.1"                # the address to listen on; only this machine by default
+port = 8000
+
+[build]
+out = "target/git-kb"             # where the site is written; git kb build only empties a folder it wrote itself
+
+[look]                            # how pages look until a reader chooses otherwise in the Aa menu
+scheme = "auto"                   # light, dark, or auto, as the reader's system is
+palette = "github"                # github, paper, solarized, nord or gruvbox
+size = 16                         # the text size in pixels: 14, 15, 16, 18 or 20
+font = "sans"                     # the text font: sans, serif or mono
+code = "system"                   # the code font: system, menlo or courier
+```
+
+## Developing
+
+```sh
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+CI runs these, plus `cargo deny`. The browser code is TypeScript in `web/src`. `cargo build` type-checks it and compiles it, through `build.rs`, so a type error fails the build.
+
 ## License
 
 Apache-2.0; see [LICENSE](LICENSE).
