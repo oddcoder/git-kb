@@ -31,7 +31,9 @@ if (stale) {
 execFileSync(process.execPath, [join(tools, 'node_modules', 'typescript', 'bin', 'tsc'), '--noEmit', '-p', join(web, 'tsconfig.json')], { stdio: 'inherit' });
 const esbuild = await import(pathToFileURL(join(tools, 'node_modules', 'esbuild', 'lib', 'main.js')).href);
 
-const scripts = readdirSync(sources).filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'));
+// The page's scripts are web/src/*.ts but the helpers they share.
+const LIBRARIES = ['dom.ts'];
+const scripts = readdirSync(sources).filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts') && !LIBRARIES.includes(f));
 mkdirSync(out, { recursive: true });
 await Promise.all(scripts.map((f) => esbuild.build({
   entryPoints: [join(sources, f)], outfile: join(out, f.replace(/\.ts$/, '.js')), bundle: true, format: 'iife',

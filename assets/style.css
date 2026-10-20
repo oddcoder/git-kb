@@ -122,7 +122,9 @@ ul.log, ul.refs { padding-left: 0; list-style: none; }
 
 /* The sidebar, beside the page: the page's headings, and the tree of the site's pages, the one shown marked. On a
    narrow screen, only the page. */
-.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+.layout { display: grid; grid-template-columns: var(--side-width, 260px) minmax(0, 1fr); }
+[data-side="hidden"] .layout { grid-template-columns: minmax(0, 1fr); }
+[data-side="hidden"] .side { display: none; }
 .side { position: sticky; top: 48px; align-self: start; height: calc(100vh - 48px); overflow-y: auto;
         padding: 24px 16px; border-right: 1px solid var(--line); font-size: 14px; line-height: 1.4; }
 .side > * + * { margin-top: 24px; }
@@ -142,7 +144,23 @@ ul.log, ul.refs { padding-left: 0; list-style: none; }
 .contents a:hover { color: var(--accent); }
 .contents [data-level="2"] a { padding-left: 20px; }
 .contents [data-level="3"] a { padding-left: 32px; font-size: 13px; }
-@media (max-width: 760px) { .layout { display: block; } .side { display: none; } }
+@media (max-width: 760px) { .layout { display: block; } .side, .edge { display: none; } }
+
+/* The layout, by dragging, as web/src/layout.ts keeps it: the sidebar's width, by its edge, or closed; the text's
+   width, by its right edge; and where the text sits, by its left edge, centred unless placed. */
+[data-placed] .page { margin-left: var(--text-left, 0); }
+.edge { position: absolute; top: 0; bottom: 0; z-index: 5; width: 12px; cursor: col-resize; touch-action: none; }
+.edge::after { content: ""; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; border-radius: 1px;
+               background: var(--accent); opacity: 0; transition: opacity 0.15s; }
+.edge:hover::after, .edge.dragging::after { opacity: 0.5; }
+.edge-left { left: 0; cursor: grab; }
+.edge-left.dragging { cursor: grabbing; }
+.edge-right { right: 0; }
+.edge-side { position: fixed; top: 48px; left: calc(var(--side-width, 260px) - 6px); }
+[data-side="hidden"] .edge-side { left: 0; }
+[data-side="hidden"] .edge-side::after { opacity: 0.25; }
+.dragging-layout, .dragging-layout * { cursor: col-resize !important; user-select: none; }
+.pop { resize: both; min-width: 240px; min-height: 60px; }
 
 /* The page, and the trail of the folders it is in. */
 .page { max-width: var(--text-width); margin: 0 auto; padding: 24px 24px 96px; }

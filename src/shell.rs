@@ -29,8 +29,16 @@ pub const STYLE_PATH: &str = "_assets/style.css";
 pub const LOOK: &str = include_str!(concat!(env!("OUT_DIR"), "/look.js"));
 pub const LOOK_PATH: &str = "_assets/look.js";
 
+/// The script of the pages' layout, compiled from `web/src/layout.ts`, and where it is in the site.
+pub const LAYOUT: &str = include_str!(concat!(env!("OUT_DIR"), "/layout.js"));
+pub const LAYOUT_PATH: &str = "_assets/layout.js";
+
 /// The files every page uses, by their paths in the site.
-pub const ASSETS: [(&str, &str); 2] = [(STYLE_PATH, STYLE), (LOOK_PATH, LOOK)];
+pub const ASSETS: [(&str, &str); 3] = [
+    (STYLE_PATH, STYLE),
+    (LOOK_PATH, LOOK),
+    (LAYOUT_PATH, LAYOUT),
+];
 
 /// How a site's pages link to the rest of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,9 +152,13 @@ impl Shell {
                 "<!doctype html>\n<html lang=\"en\"{look}>\n<head>\n<meta charset=\"utf-8\">\n",
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
                 "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n",
-                "<script src=\"{script}\"></script>\n</head>\n<body>\n",
+                "<script src=\"{script}\"></script>\n<script src=\"{layout}\"></script>\n</head>\n<body>\n",
                 "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}{revisions}</header>\n",
-                "<div class=\"layout\">\n{side}<main class=\"page\">\n{trail}{body}</main>\n</div>\n",
+                "<div class=\"layout\">\n{side}<main class=\"page\">\n{trail}{body}",
+                "<div class=\"edge edge-left\" title=\"Drag to move the text; let go near the middle to centre it\"></div>",
+                "<div class=\"edge edge-right\" title=\"Drag to set the text's width; double-click for the default\"></div>",
+                "</main>\n<div class=\"edge edge-side\" title=\"Drag to size the sidebar, or close it; double-click for the default\"></div>\n",
+                "</div>\n",
                 "{live}</body>\n</html>\n"
             ),
             // A commit does not change; nor does a page of it.
@@ -161,6 +173,7 @@ impl Shell {
             canonical = self.canonical(at, file),
             style = self.asset(at, STYLE_PATH),
             script = self.asset(at, LOOK_PATH),
+            layout = self.asset(at, LAYOUT_PATH),
             top = self.folder(at, Path::new("")),
             name = Self::escape(&self.name),
             side = self.side(at, nav),
@@ -553,7 +566,7 @@ mod tests {
             "<title>Home · docs</title>",
             r#"<link rel="stylesheet" href="/_assets/style.css">"#,
             r#"<a class="site" href="/docs/">docs</a>"#,
-            "<main class=\"page\">\n<p>Hi</p>\n</main>",
+            "<main class=\"page\">\n<p>Hi</p>\n<div class=\"edge edge-left\"",
         ] {
             assert!(page.contains(wanted), "{wanted} missing from {page}");
         }
@@ -579,6 +592,25 @@ mod tests {
         for wanted in [
             r#"<html lang="en" data-palette="nord">"#,
             r#"<script src="../../_assets/look.js"></script>"#,
+        ] {
+            assert!(page.contains(wanted), "{wanted} missing from {page}");
+        }
+    }
+
+    #[test]
+    fn a_page_has_its_layout_s_script_and_edges() {
+        let page = Shell::new("docs".into(), Links::Built).page(
+            Path::new("arch"),
+            "",
+            "A",
+            "",
+            &Nav::none(),
+        );
+        for wanted in [
+            r#"<script src="../../_assets/layout.js"></script>"#,
+            r#"<div class="edge edge-left""#,
+            r#"<div class="edge edge-right""#,
+            r#"<div class="edge edge-side""#,
         ] {
             assert!(page.contains(wanted), "{wanted} missing from {page}");
         }
