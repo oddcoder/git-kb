@@ -8,5 +8,6 @@ pub mod git;
 pub mod live;
 pub mod nav;
 pub mod render;
+pub mod search;
 pub mod serve;
 pub mod shell;

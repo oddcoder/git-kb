@@ -168,6 +168,9 @@ impl Server {
         if path == "/ref/" {
             return self.revisions();
         }
+        if path == "/_search" {
+            return self.search(query.unwrap_or(""));
+        }
         let (snapshot, rest) = if let Some(rest) = path.strip_prefix("/docs") {
             if rest.is_empty() {
                 return Redirect::permanent("/docs/").into_response();
@@ -198,6 +201,43 @@ impl Server {
             Ok(view) => view.answer(decoded.trim_start_matches('/'), path, query),
             Err(e) => self.failed(&e),
         }
+    }
+
+    /// What a search finds: in the folder as it is, or at the commit `ref` names.
+    fn search(&self, query: &str) -> Response {
+        let param = |name: &str| {
+            query.split('&').find_map(|kv| {
+                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+                (k == name).then(|| {
+                    percent_decode_str(&v.replace('+', " "))
+                        .decode_utf8_lossy()
+                        .into_owned()
+                })
+            })
+        };
+        let (asked, rev) = (param("q").unwrap_or_default(), param("ref"));
+        let snapshot = match rev.as_deref().map(|name| self.snapshot(name)).transpose() {
+            Ok(snapshot) => snapshot,
+            Err(e) => return self.missing(&format!("{e:#}")),
+        };
+        let view = match self.view(snapshot) {
+            Ok(view) => view,
+            Err(e) => return self.failed(&e),
+        };
+        let index = crate::search::Index::new(&view.files, &self.renderer, |f| {
+            view.read(f)
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        });
+        let shell = view.shell.clone().asking(&asked);
+        let body = shell.results(&asked, &index.search(&asked));
+        let pages = view.pages();
+        let nav = Nav {
+            pages: &pages,
+            current: Path::new(""),
+            headings: &[],
+        };
+        Html(shell.page(Path::new(""), "", "Search", &body, &nav)).into_response()
     }
 
     /// The list of the branches and tags, and of every commit up to the last that changed a page.
@@ -966,6 +1006,36 @@ mod tests {
                 "text/plain; charset=utf-8",
                 "# A\n\n*Some* text.\n"
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn the_site_is_searched_as_it_is_or_at_a_commit() {
+        let git = crate::git::tests::Git::new();
+        git.write("docs/a.md", "# DMA\n\nMoves data.\n");
+        git.commit("first");
+        git.write("docs/a.md", "# DMA\n\nMoves bytes.\n");
+        let site = Site::of(git.top().join("docs"));
+        let found = site.get("/_search?q=moves+bytes").await.2;
+        assert!(found.contains("1 page matches “moves bytes”."), "{found}");
+        assert!(
+            found.contains(r#"<a href="/docs/a.md#dma"><strong>DMA</strong>"#),
+            "{found}"
+        );
+        assert!(
+            found.contains("<mark>Moves</mark> <mark>bytes</mark>"),
+            "{found}"
+        );
+        assert!(
+            found.contains(r#"value="moves bytes""#),
+            "the box says what was searched for: {found}"
+        );
+        let then = site.get("/_search?q=bytes&ref=main").await.2;
+        assert!(then.contains("Nothing matches"), "{then}");
+        let page = site.get("/ref/main/a.md").await.2;
+        assert!(
+            page.contains(r#"<input type="hidden" name="ref" value="main">"#),
+            "{page}"
         );
     }
 

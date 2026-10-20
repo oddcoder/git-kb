@@ -269,6 +269,26 @@ impl Builder {
                 built.files += 1;
             }
         }
+        // Its search: a page that searches, in the browser, the index beside it.
+        let index = crate::search::Index::new(files, &self.renderer, |f| {
+            read(f)
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        });
+        let search = to.join("_search.html");
+        fs::create_dir_all(to)?;
+        let nav = Nav {
+            pages: &pages,
+            current: Path::new(""),
+            headings: &[],
+        };
+        let body = shell.search_page(Path::new(""));
+        fs::write(
+            &search,
+            shell.page(Path::new(""), "_search.html", "Search", &body, &nav),
+        )
+        .with_context(|| search.display().to_string())?;
+        fs::write(to.join("_search.js"), index.script())?;
         for (path, folder) in &folders {
             if Self::index(shell, &pages, to, path, folder)? {
                 built.folders += 1;
@@ -764,8 +784,9 @@ mod tests {
                 .build()
                 .flatten()
                 .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-                // The style sheet is in every site; a test of its own sees it.
+                // The style sheet and the search are in every site; tests of their own see them.
                 .filter(|e| !e.path().starts_with(root.join("_assets")))
+                .filter(|e| !e.file_name().to_string_lossy().starts_with("_search."))
                 .map(|e| {
                     e.path()
                         .strip_prefix(&root)
@@ -1285,6 +1306,31 @@ mod tests {
             "{margin}"
         );
         assert!(read(Path::new("docs/a.html")).contains(r#"<div class="blk new">"#));
+    }
+
+    #[test]
+    fn a_built_site_searches_in_the_browser() {
+        let tree = Tree::with(&[("docs/arch/dma.md", b"# DMA\n\nMoves data.")]);
+        Builder::default()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        let page = tree.read("site/docs/arch/dma.html");
+        assert!(
+            page.contains(r#"<form class="search" action="../_search.html""#),
+            "{page}"
+        );
+        let search = tree.read("site/docs/_search.html");
+        assert!(
+            search.contains(
+                r#"<script src="./_search.js"></script><script src="../_assets/search.js">"#
+            ),
+            "{search}"
+        );
+        assert!(
+            tree.read("site/docs/_search.js")
+                .contains(r#""href":"arch/dma.html""#)
+        );
+        assert_eq!(tree.read("site/_assets/search.js"), shell::SEARCH);
     }
 
     #[test]

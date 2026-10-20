@@ -79,6 +79,17 @@ body { margin: 0; font: var(--text-size)/1.6 var(--text-font); }
                  font-size: 12px; }
 .bar .revision:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
 .bar .revisions { color: var(--muted); font-size: 14px; }
+.search { flex: 1; max-width: 420px; margin-left: auto; }
+.search input { width: 100%; height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px;
+                background: var(--subtle); color: var(--text); font: inherit; font-size: 14px; }
+.search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; background: var(--page); }
+.bar .search + .look-open { margin-left: 0; }
+
+/* What a search found: each page, its best section, and a passage of it. */
+ul.results { padding-left: 0; list-style: none; }
+.results li { margin: 0; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.results p { margin: 4px 0; }
+.results small, .muted { color: var(--muted); }
 
 /* A page's history: the line under its title, and the lists of commits. */
 .meta { margin: -0.4em 0 1.2em; color: var(--muted); font-size: 13px; }

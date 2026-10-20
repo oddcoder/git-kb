@@ -27,6 +27,15 @@ pub struct Page {
     pub headings: Vec<Heading>,
 }
 
+/// A part of a page under one heading, or above the first: the heading's id and text, and the section's own text,
+/// without markup, as search reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub id: Option<String>,
+    pub heading: String,
+    pub text: String,
+}
+
 /// A heading, with the id it is linked to by, as `page.md#id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Heading {
@@ -181,6 +190,51 @@ impl Renderer {
                 .replace('>', "&gt;")
         });
         format!("<pre class=\"source\"><code>{code}</code></pre>\n")
+    }
+
+    /// A page's sections, each its heading and its text, without markup: the first, above any heading, has none.
+    #[must_use]
+    pub fn sections(&self, markdown: &str) -> Vec<Section> {
+        let mut out = vec![Section {
+            id: None,
+            heading: String::new(),
+            text: String::new(),
+        }];
+        let mut ids = Ids::default();
+        let mut events = Parser::new_ext(markdown, self.options);
+        while let Some(event) = events.next() {
+            match event {
+                Event::Start(Tag::Heading { level, id, .. }) => {
+                    let inner = Self::inside(&mut events);
+                    let heading = ids.heading(level, id, &inner);
+                    out.push(Section {
+                        id: Some(heading.id),
+                        heading: heading.text,
+                        text: String::new(),
+                    });
+                }
+                Event::Text(t) | Event::Code(t) => {
+                    if let Some(section) = out.last_mut() {
+                        section.text.push_str(&t);
+                    }
+                }
+                // Inline tags end inside a sentence; any other ends a block, so the next text starts a new word.
+                Event::End(
+                    TagEnd::Emphasis
+                    | TagEnd::Strong
+                    | TagEnd::Strikethrough
+                    | TagEnd::Link
+                    | TagEnd::Image,
+                ) => {}
+                Event::SoftBreak | Event::HardBreak | Event::End(_) => {
+                    if let Some(section) = out.last_mut() {
+                        section.text.push(' ');
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// A page's title, as `render` gives it, without rendering the rest: the text of its first top-level heading.
@@ -537,6 +591,31 @@ mod tests {
         assert!(
             source.contains("&lt;") && source.contains("&amp;") && !source.contains("<b>"),
             "escaped: {source}"
+        );
+    }
+
+    #[test]
+    fn a_page_is_its_sections_under_its_headings() {
+        let sections = Renderer::new().sections(
+            "Intro **bold**.\n\n# Title\n\nA [link](x.md).\n\n## Sub part\n\n- one\n- two\n",
+        );
+        let said: Vec<(Option<&str>, &str, String)> = sections
+            .iter()
+            .map(|s| {
+                (
+                    s.id.as_deref(),
+                    s.heading.as_str(),
+                    s.text.split_whitespace().collect::<Vec<_>>().join(" "),
+                )
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (None, "", "Intro bold.".to_string()),
+                (Some("title"), "Title", "A link.".to_string()),
+                (Some("sub-part"), "Sub part", "one two".to_string()),
+            ]
         );
     }
 

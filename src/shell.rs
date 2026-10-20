@@ -16,6 +16,7 @@ use crate::nav::Nav;
 mod compare;
 mod history;
 mod margin;
+mod search;
 
 pub use compare::{Comparison, Version};
 pub use history::{PageHistory, PageState};
@@ -33,11 +34,16 @@ pub const LOOK_PATH: &str = "_assets/look.js";
 pub const LAYOUT: &str = include_str!(concat!(env!("OUT_DIR"), "/layout.js"));
 pub const LAYOUT_PATH: &str = "_assets/layout.js";
 
+/// The script of a built site's search, compiled from `web/src/search.ts`, and where it is in the site.
+pub const SEARCH: &str = include_str!(concat!(env!("OUT_DIR"), "/search.js"));
+pub const SEARCH_PATH: &str = "_assets/search.js";
+
 /// The files every page uses, by their paths in the site.
-pub const ASSETS: [(&str, &str); 3] = [
+pub const ASSETS: [(&str, &str); 4] = [
     (STYLE_PATH, STYLE),
     (LOOK_PATH, LOOK),
     (LAYOUT_PATH, LAYOUT),
+    (SEARCH_PATH, SEARCH),
 ];
 
 /// How a site's pages link to the rest of it.
@@ -66,6 +72,8 @@ pub struct Shell {
     place: PathBuf,
     /// Whether the folder is in a git repository, with revisions to list.
     revisions: bool,
+    /// What the search box says: what was searched for, on the page of what it found.
+    query: String,
 }
 
 impl Shell {
@@ -86,6 +94,7 @@ impl Shell {
             revision: None,
             place: PathBuf::from("docs"),
             revisions: false,
+            query: String::new(),
         }
     }
 
@@ -109,6 +118,15 @@ impl Shell {
         Self {
             revision: None,
             place: PathBuf::from("ref"),
+            ..self
+        }
+    }
+
+    /// The same, its search box saying what was searched for.
+    #[must_use]
+    pub fn asking(self, query: &str) -> Self {
+        Self {
+            query: query.to_owned(),
             ..self
         }
     }
@@ -153,7 +171,7 @@ impl Shell {
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
                 "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n",
                 "<script src=\"{script}\"></script>\n<script src=\"{layout}\"></script>\n</head>\n<body>\n",
-                "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}{revisions}</header>\n",
+                "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}{revisions}{search}</header>\n",
                 "<div class=\"layout\">\n{side}<main class=\"page\">\n{trail}{body}",
                 "<div class=\"edge edge-left\" title=\"Drag to move the text; let go near the middle to centre it\"></div>",
                 "<div class=\"edge edge-right\" title=\"Drag to set the text's width; double-click for the default\"></div>",
@@ -168,6 +186,7 @@ impl Shell {
             },
             revision = self.badge(at),
             revisions = self.revisions_link(at),
+            search = self.search_box(at, &self.query),
             look = self.look.attributes(),
             window = window,
             canonical = self.canonical(at, file),
