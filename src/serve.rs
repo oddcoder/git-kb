@@ -48,8 +48,8 @@ pub struct Server {
 impl Server {
     /// A server of a folder of Markdown.
     #[must_use]
-    pub fn new(root: PathBuf) -> Self {
-        let shell = Shell::new(Builder::name(&root), Links::Served);
+    pub fn new(root: PathBuf, title: Option<String>) -> Self {
+        let shell = Shell::new(Builder::new(title, None).title(&root), Links::Served);
         Self {
             root,
             renderer: Renderer::new(),
@@ -207,7 +207,7 @@ impl Server {
                     let page = self.renderer.render(&text);
                     let title = page.title.unwrap_or_else(|| Self::stem(file));
                     let at = file.parent().unwrap_or(Path::new(""));
-                    Html(self.shell.page(at, &title, &page.html)).into_response()
+                    Html(self.shell.page(at, "", &title, &page.html)).into_response()
                 }
                 Err(e) => read(e),
             };
@@ -241,7 +241,7 @@ impl Server {
         );
         (
             StatusCode::NOT_FOUND,
-            Html(self.shell.page(Path::new(""), "Not found", &body)),
+            Html(self.shell.page(Path::new(""), "", "Not found", &body)),
         )
             .into_response()
     }
@@ -256,6 +256,7 @@ impl Server {
         error!("{e:#}");
         let body = self.shell.page(
             Path::new(""),
+            "",
             "Error",
             "<h1>Something went wrong</h1>
 ",
@@ -291,7 +292,7 @@ mod tests {
 
         /// The status, content type, and body or else where it redirects, of the answer to a request.
         async fn get(&self, path: &str) -> (StatusCode, String, String) {
-            let router = Arc::new(Server::new(self.0.path().join("docs"))).router();
+            let router = Arc::new(Server::new(self.0.path().join("docs"), None)).router();
             let response = router
                 .oneshot(Request::get(path).body(Body::empty()).unwrap())
                 .await
@@ -432,7 +433,7 @@ mod tests {
     async fn an_address_in_use_is_an_error_naming_it() {
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = taken.local_addr().unwrap();
-        let error = Server::new("/docs".into())
+        let error = Server::new("/docs".into(), None)
             .run(address, async {})
             .await
             .unwrap_err();
@@ -462,7 +463,7 @@ mod tests {
     #[tokio::test]
     async fn open_pages_are_told_of_changes() {
         let site = Site::with(&[("docs/a.md", b"# A")]);
-        let server = Arc::new(Server::new(site.0.path().join("docs")));
+        let server = Arc::new(Server::new(site.0.path().join("docs"), None));
         let response = Arc::clone(&server)
             .router()
             .oneshot(Request::get("/_events").body(Body::empty()).unwrap())
@@ -484,5 +485,22 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(&event[..], b"data: changed\n\n");
+    }
+
+    #[tokio::test]
+    async fn the_site_s_title_names_it() {
+        let site = Site::with(&[("docs/arch/dma.md", b"# DMA")]);
+        let router = Arc::new(Server::new(
+            site.0.path().join("docs"),
+            Some("pentasil".into()),
+        ))
+        .router();
+        let response = router
+            .oneshot(Request::get("/arch/dma.md").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let page = String::from_utf8_lossy(&body);
+        assert!(page.contains("<title>DMA · pentasil</title>"), "{page}");
     }
 }

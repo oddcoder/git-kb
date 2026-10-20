@@ -43,6 +43,10 @@ pub(crate) struct Folder {
 #[derive(Debug, Default)]
 pub struct Builder {
     renderer: Renderer,
+    /// The site's name; its folder's when none is given.
+    title: Option<String>,
+    /// Where the site lives, ending in `/`, for its pages' canonical addresses.
+    url: Option<String>,
 }
 
 impl Builder {
@@ -53,9 +57,14 @@ impl Builder {
     /// The files, in `.gitignore`'s form, that say what the site leaves out and git does not.
     pub const IGNORE: &str = ".kbignore";
 
+    /// A builder of sites named `title`, or else by their folders, and living at `url`, if it is given.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(title: Option<String>, url: Option<String>) -> Self {
+        Self {
+            renderer: Renderer::new(),
+            title,
+            url,
+        }
     }
 
     /// Writes a folder of Markdown as a site, into `out`, in place of whatever an earlier build wrote there.
@@ -78,7 +87,7 @@ impl Builder {
         // Every file first, so that each page knows, as it is rendered, which folders are shown by their
         // README: those with one and without an index.md, each with its README's page.
         let files = Self::files(&folder, Some(&out))?;
-        let shell = Shell::new(Self::name(&folder), Links::Built);
+        let shell = Shell::new(self.title(&folder), Links::Built).living_at(self.url.clone());
         let readmes = Self::readmes(&files);
 
         for path in &files {
@@ -109,7 +118,7 @@ impl Builder {
             }
         }
         for (path, folder) in &folders {
-            if Self::index(&shell, &out, path, folder)? {
+            if self.index(&shell, &out, path, folder)? {
                 built.folders += 1;
             }
         }
@@ -189,7 +198,9 @@ impl Builder {
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
         let title = page.title.unwrap_or_else(|| name.into_owned());
         let at = path.parent().unwrap_or(Path::new(""));
-        (shell.page(at, &title, &page.html), title)
+        let file = path.with_extension("html");
+        let file = file.file_name().unwrap_or_default().to_string_lossy();
+        (shell.page(at, &file, &title, &page.html), title)
     }
 
     /// A page filed under its folder, by the name of the HTML file it was written as and its title, and each
@@ -224,7 +235,13 @@ impl Builder {
 
     /// A folder's `index.html`, unless its `index.md` is it already: a page that redirects to its README's,
     /// or else a list of its folders and its pages, by title. Answers whether it wrote one.
-    fn index(shell: &Shell, out: &Path, path: &Path, folder: &Folder) -> anyhow::Result<bool> {
+    fn index(
+        &self,
+        shell: &Shell,
+        out: &Path,
+        path: &Path,
+        folder: &Folder,
+    ) -> anyhow::Result<bool> {
         let named = |name: &str| folder.pages.keys().find(|p| p.eq_ignore_ascii_case(name));
         if named("index.html").is_some() {
             return Ok(false);
@@ -232,8 +249,15 @@ impl Builder {
         let dir = out.join(path);
         let index = dir.join("index.html");
         if let Some(readme) = named("README.html") {
-            fs::write(&index, Self::redirect(&folder.pages[readme], readme))
-                .with_context(|| index.display().to_string())?;
+            let canonical = self
+                .url
+                .as_ref()
+                .map(|url| format!("{url}{}", Self::page_path(path, readme)));
+            fs::write(
+                &index,
+                Self::redirect(&folder.pages[readme], readme, canonical.as_deref()),
+            )
+            .with_context(|| index.display().to_string())?;
             debug!(folder = %path.display(), "redirected to its README");
             return Ok(true);
         }
@@ -270,10 +294,25 @@ impl Builder {
             "<h1>{}</h1>\n<ul class=\"listing\">\n{items}</ul>\n",
             Self::escape(&name)
         );
-        shell.page(path, &name, &body)
+        shell.page(path, "", &name, &body)
     }
 
-    /// A site's name: its folder's.
+    /// A page's path in the site, as a link from its top: `arch/README.html`.
+    fn page_path(folder: &Path, file: &str) -> String {
+        folder
+            .components()
+            .map(|c| Self::href(&c.as_os_str().to_string_lossy()))
+            .chain(std::iter::once(Self::href(file)))
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// A site's name: its title, or else its folder's.
+    pub(crate) fn title(&self, folder: &Path) -> String {
+        self.title.clone().unwrap_or_else(|| Self::name(folder))
+    }
+
+    /// A folder's name, for a site without a title.
     pub(crate) fn name(folder: &Path) -> String {
         folder
             .file_name()
@@ -387,16 +426,18 @@ impl Builder {
 
     /// A page that sends whoever opens it to another in its folder: by the HTML itself, as a site on disk or
     /// on a host such as GitHub Pages cannot redirect, and naming that page for search.
-    fn redirect(title: &str, to: &str) -> String {
+    fn redirect(title: &str, to: &str, canonical: Option<&str>) -> String {
         let to = Self::escape(&Self::href(to));
+        let canonical = canonical.map_or_else(|| to.clone(), Self::escape);
         format!(
             concat!(
                 "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{title}</title>\n",
-                "<link rel=\"canonical\" href=\"{to}\">\n",
+                "<link rel=\"canonical\" href=\"{canonical}\">\n",
                 "<meta http-equiv=\"refresh\" content=\"0; url={to}\">\n</head>\n<body>\n",
                 "<p>This page is at <a href=\"{to}\">{to}</a>.</p>\n</body>\n</html>\n"
             ),
             title = Self::escape(title),
+            canonical = canonical,
             to = to
         )
     }
@@ -467,7 +508,7 @@ mod tests {
             ("docs/index.md", b"# Home\n\nHello."),
             ("docs/arch/overview.md", b"# Overview"),
         ]);
-        let built = Builder::new()
+        let built = Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
@@ -535,7 +576,7 @@ mod tests {
                 b"Back [home](../index.md), or [from the top](/index.md).",
             ),
         ]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         let home = tree.read("site/index.html");
@@ -553,7 +594,7 @@ mod tests {
     #[test]
     fn a_page_without_a_heading_is_titled_by_its_name() {
         let tree = Tree::with(&[("docs/notes.md", b"Just <text>.")]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert!(
@@ -565,7 +606,7 @@ mod tests {
     #[test]
     fn titles_are_escaped() {
         let tree = Tree::with(&[("docs/a.md", b"# A < B & \"c\"")]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert!(
@@ -578,7 +619,7 @@ mod tests {
     fn other_files_are_copied_as_they_are() {
         let image: &[u8] = &[0x89, b'P', b'N', b'G', 0, 1, 2, 255];
         let tree = Tree::with(&[("docs/img/chip.png", image), ("docs/a.md", b"# A")]);
-        let built = Builder::new()
+        let built = Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
@@ -600,7 +641,7 @@ mod tests {
             ("docs/target/debug/huge.bin", b"no"),
             ("docs/build.log", b"no"),
         ]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
@@ -619,7 +660,7 @@ mod tests {
             ("docs/arch/scratch.md", b"# Scratch"),
             ("docs/arch/c.md", b"# C"),
         ]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
@@ -643,7 +684,7 @@ mod tests {
             ("docs/.notes.md", b"# Notes"),
             ("docs/.git/HEAD", b"no"),
         ]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
@@ -655,7 +696,7 @@ mod tests {
     #[test]
     fn an_output_folder_inside_the_folder_is_not_built_into_itself() {
         let tree = Tree::with(&[("docs/a.md", b"# A")]);
-        let builder = Builder::new();
+        let builder = Builder::default();
         builder
             .build(&tree.path("docs"), &tree.path("docs/site"))
             .unwrap();
@@ -679,11 +720,11 @@ mod tests {
     #[test]
     fn building_again_leaves_nothing_of_what_is_gone() {
         let tree = Tree::with(&[("docs/a.md", b"# A"), ("docs/b.md", b"# B")]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         fs::remove_file(tree.path("docs/b.md")).unwrap();
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(tree.files("site"), [".git-kb-site", "a.html", "index.html"]);
@@ -692,7 +733,7 @@ mod tests {
     #[test]
     fn a_folder_a_build_did_not_write_is_never_emptied() {
         let tree = Tree::with(&[("docs/a.md", b"# A"), ("site/mine.txt", b"keep me")]);
-        let error = Builder::new()
+        let error = Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap_err();
         assert!(error.to_string().contains("did not write"), "{error}");
@@ -702,7 +743,7 @@ mod tests {
     #[test]
     fn the_output_folder_may_not_hold_the_folder_built() {
         let tree = Tree::with(&[("docs/a.md", b"# A")]);
-        let error = Builder::new()
+        let error = Builder::default()
             .build(&tree.path("docs"), &tree.path(""))
             .unwrap_err();
         assert!(error.to_string().contains("holds the folder"), "{error}");
@@ -715,7 +756,7 @@ mod tests {
             ("docs/index.md", b"# Home"),
             ("docs/README.md", b"# Readme"),
         ]);
-        let built = Builder::new()
+        let built = Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(built.folders, 0);
@@ -734,7 +775,7 @@ mod tests {
                 b"# DMA\n\n[Read me](README.md), [the folder](./), [from the top](/arch/).",
             ),
         ]);
-        let built = Builder::new()
+        let built = Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
@@ -774,7 +815,7 @@ mod tests {
             ("docs/index.md", b"# Home\n\n[Read me](README.md)"),
             ("docs/README.md", b"# Readme"),
         ]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert!(
@@ -812,7 +853,7 @@ mod tests {
     #[test]
     fn a_folder_without_pages_has_no_index() {
         let tree = Tree::with(&[("docs/a.md", b"# A"), ("docs/img/chip.png", b"png")]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert!(!tree.path("site/img/index.html").exists());
@@ -822,7 +863,7 @@ mod tests {
     #[test]
     fn a_built_site_has_its_style_sheet() {
         let tree = Tree::with(&[("docs/arch/a.md", b"# A")]);
-        Builder::new()
+        Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(tree.read("site/_assets/style.css"), shell::STYLE);
@@ -830,5 +871,43 @@ mod tests {
             tree.read("site/arch/a.html")
                 .contains(r#"href="../_assets/style.css""#)
         );
+    }
+
+    #[test]
+    fn the_site_s_title_names_it() {
+        let tree = Tree::with(&[("docs/a.md", b"# A")]);
+        Builder::new(Some("pentasil".into()), None)
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        let page = tree.read("site/a.html");
+        assert!(page.contains("<title>A · pentasil</title>"), "{page}");
+        assert!(
+            page.contains(r#"<a class="site" href="./index.html">pentasil</a>"#),
+            "{page}"
+        );
+    }
+
+    #[test]
+    fn where_the_site_lives_names_each_page_s_address() {
+        let tree = Tree::with(&[
+            ("docs/arch/README.md", b"# Architecture"),
+            ("docs/arch/dma.md", b"# DMA"),
+        ]);
+        Builder::new(None, Some("https://foobar.xyz/docs/".into()))
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        let dma = tree.read("site/arch/dma.html");
+        assert!(
+            dma.contains(r#"<link rel="canonical" href="https://foobar.xyz/docs/arch/dma.html">"#),
+            "{dma}"
+        );
+        let stub = tree.read("site/arch/index.html");
+        assert!(
+            stub.contains(
+                r#"<link rel="canonical" href="https://foobar.xyz/docs/arch/README.html">"#
+            ),
+            "{stub}"
+        );
+        assert!(stub.contains(r#"content="0; url=README.html""#), "{stub}");
     }
 }

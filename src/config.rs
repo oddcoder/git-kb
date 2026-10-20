@@ -6,6 +6,9 @@
 //! ```toml
 //! root = "docs"          # the folder of Markdown; the file's own by default. Before any [table], as
 //!                        # TOML has it.
+//! title = "pentasil"     # the site's name, in its bar and its pages' titles; the root folder's by default
+//! url = "https://foobar.xyz/docs/"  # where the built site lives, for its pages' canonical addresses;
+//!                        # none by default
 //!
 //! [serve]
 //! host = "127.0.0.1"     # the address to listen on; only this machine by default
@@ -28,6 +31,10 @@ use tracing::{debug, trace};
 pub struct Config {
     /// The folder of Markdown shown, as a full path once read.
     pub root: PathBuf,
+    /// The site's name; the root folder's when none is given.
+    pub title: Option<String>,
+    /// Where the built site lives, ending in `/` once read, as `https://foobar.xyz/docs/`.
+    pub url: Option<String>,
     pub serve: ServeConfig,
     pub build: BuildConfig,
 }
@@ -36,6 +43,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             root: ".".into(),
+            title: None,
+            url: None,
             serve: ServeConfig::default(),
             build: BuildConfig::default(),
         }
@@ -124,6 +133,14 @@ impl Config {
 
     /// Its paths taken against a folder.
     fn resolve(&mut self, base: &Path) -> anyhow::Result<()> {
+        if let Some(url) = &mut self.url {
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                anyhow::bail!("url {url}: an address starts with https:// or http://");
+            }
+            if !url.ends_with('/') {
+                url.push('/');
+            }
+        }
         let root = base.join(&self.root);
         self.root = std::fs::canonicalize(&root)
             .with_context(|| format!("the root folder, {}", root.display()))?;
@@ -279,5 +296,33 @@ mod tests {
             error.contains("the root folder") && error.contains("missing"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn the_site_s_title_is_read() {
+        let tree = Tree::with(&[(
+            "git-kb.toml",
+            "title = \"pentasil\"
+",
+        )]);
+        let (config, _) = Config::find(&tree.path("")).unwrap();
+        assert_eq!(config.title.as_deref(), Some("pentasil"));
+        let tree = Tree::with(&[(
+            "git-kb.toml",
+            "[site]
+title = \"pentasil\"
+",
+        )]);
+        assert!(Config::find(&tree.path("")).is_err(), "there is no [site]");
+    }
+
+    #[test]
+    fn the_site_s_url_is_read_and_ends_with_a_slash() {
+        let tree = Tree::with(&[("git-kb.toml", "url = \"https://foobar.xyz/docs\"\n")]);
+        let (config, _) = Config::find(&tree.path("")).unwrap();
+        assert_eq!(config.url.as_deref(), Some("https://foobar.xyz/docs/"));
+        let tree = Tree::with(&[("git-kb.toml", "url = \"foobar.xyz\"\n")]);
+        let error = format!("{:#}", Config::find(&tree.path("")).unwrap_err());
+        assert!(error.contains("https://"), "{error}");
     }
 }
