@@ -222,6 +222,37 @@ pre code { padding: 0; font-size: 100%; background: none; }
 .hl-variable { color: var(--code-variable); }
 .hl-invalid { color: var(--code-keyword); text-decoration: underline wavy; }
 
+/* A page's links, in the sidebar: the graph of the pages around it, then each page linked either way, with the
+   sections the links sit in. And the graph of every page, drawn by web/src/graph.ts. */
+.links h2 { display: flex; justify-content: space-between; }
+.side .graph-all { display: inline; padding: 0 4px; color: var(--muted); font-size: 14px; line-height: 1; }
+.refs-list { margin-top: 8px; }
+.side .refs-list li { margin: 0 0 4px; }
+.side .refs-list .ref { display: block; padding: 2px 8px; }
+.ref .dir { display: inline-block; width: 1.2em; color: var(--muted); }
+.ref.missing { display: block; padding: 2px 8px; color: light-dark(#cf222e, #f85149); text-decoration: underline dashed; }
+.spots { display: flex; flex-wrap: wrap; gap: 2px 8px; padding: 0 8px 0 16px; }
+.side .spots a.spot { display: inline; padding: 0; color: var(--muted); font-size: 12px; }
+.side .spots a.spot:hover { background: none; color: var(--accent); }
+.kb-graph { height: 230px; margin: 0 -8px; }
+.kb-graph.full { height: 75vh; margin: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--subtle); }
+.kb-graph svg { display: block; overflow: visible; touch-action: none; user-select: none; }
+.g-edge { fill: none; stroke: var(--muted); stroke-opacity: 0.4; stroke-width: 1; transition: stroke-opacity 0.2s; }
+.g-head { fill: var(--muted); fill-opacity: 0.6; }
+.g-node { cursor: pointer; transition: opacity 0.2s; }
+.g-node circle { fill: var(--muted); stroke: var(--page); stroke-width: 1.5; transition: r 0.2s; }
+.g-node.here circle { fill: var(--accent); }
+.g-node.missing { cursor: default; }
+.g-node.missing circle { fill: none; stroke: light-dark(#cf222e, #f85149); stroke-dasharray: 2 1.5; }
+.g-node text { fill: var(--muted); font-size: 10.5px; pointer-events: none; paint-order: stroke; stroke: var(--page);
+               stroke-width: 3px; stroke-linejoin: round; transition: opacity 0.2s; }
+.g-node.here text { fill: var(--text); font-weight: 600; }
+.kb-graph.full .g-node text { stroke: var(--subtle); }
+.kb-graph.focus .g-node:not(.lit) { opacity: 0.25; }
+.kb-graph.focus .g-edge:not(.lit) { stroke-opacity: 0.08; }
+.g-edge.lit { stroke: var(--accent); stroke-opacity: 0.9; }
+.g-node.lit text { opacity: 1; fill: var(--text); }
+
 /* Page | Source, at the top right of the page: which of the two shows. */
 .page { position: relative; }
 .toggle { position: absolute; opacity: 0; pointer-events: none; }

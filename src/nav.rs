@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::build::Builder;
+use crate::graph::Graph;
 use crate::render::{Heading, Renderer};
 
 /// Every page of a site, by its path from the site's top, with its title.
@@ -20,6 +21,8 @@ pub struct Nav<'a> {
     /// The page shown, as `arch/overview.md`, or the folder, as `arch`, when it is a folder's list.
     pub current: &'a Path,
     pub headings: &'a [Heading],
+    /// The links between the site's pages, when they are known, for the page's own.
+    pub graph: Option<&'a Graph>,
 }
 
 impl Nav<'_> {
@@ -33,6 +36,7 @@ impl Nav<'_> {
             pages: &NONE,
             current: Path::new(""),
             headings: &[],
+            graph: None,
         }
     }
 }
@@ -88,6 +92,12 @@ impl Pages {
         }
         pages.sort_by_key(|(_, title)| title.to_lowercase());
         (folders, pages)
+    }
+
+    /// A page's title, if it is one of the site's.
+    #[must_use]
+    pub fn title(&self, page: &Path) -> Option<&str> {
+        self.titles.get(page).map(String::as_str)
     }
 
     /// The page a folder is shown by: its `index.md`, or else its `README.md`, as a build and the server show it.

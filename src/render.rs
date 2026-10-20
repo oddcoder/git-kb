@@ -192,6 +192,34 @@ impl Renderer {
         format!("<pre class=\"source\"><code>{code}</code></pre>\n")
     }
 
+    /// Where a page links: each link's target, in order, with the heading it sits under, as its id and text; none
+    /// above the first heading. A link in a heading sits under it.
+    #[must_use]
+    pub fn link_sites(&self, markdown: &str) -> Vec<(String, Option<(String, String)>)> {
+        let (mut out, mut ids, mut under) = (vec![], Ids::default(), None);
+        let mut events = Parser::new_ext(markdown, self.options);
+        while let Some(event) = events.next() {
+            match event {
+                Event::Start(Tag::Heading { level, id, .. }) => {
+                    let inner = Self::inside(&mut events);
+                    let heading = ids.heading(level, id, &inner);
+                    let here = Some((heading.id, heading.text));
+                    for e in &inner {
+                        if let Event::Start(Tag::Link { dest_url, .. }) = e {
+                            out.push((dest_url.to_string(), here.clone()));
+                        }
+                    }
+                    under = here;
+                }
+                Event::Start(Tag::Link { dest_url, .. }) => {
+                    out.push((dest_url.to_string(), under.clone()));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
     /// A page's sections, each its heading and its text, without markup: the first, above any heading, has none.
     #[must_use]
     pub fn sections(&self, markdown: &str) -> Vec<Section> {
@@ -615,6 +643,26 @@ mod tests {
                 (None, "", "Intro bold.".to_string()),
                 (Some("title"), "Title", "A link.".to_string()),
                 (Some("sub-part"), "Sub part", "one two".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_page_s_links_are_under_their_headings() {
+        let sites =
+            Renderer::new().link_sites("[a](a.md)\n\n# Top [b](b.md)\n\nSee [c](c.md#x).\n");
+        assert_eq!(
+            sites,
+            [
+                ("a.md".to_string(), None),
+                (
+                    "b.md".to_string(),
+                    Some(("top-b".to_string(), "Top b".to_string()))
+                ),
+                (
+                    "c.md#x".to_string(),
+                    Some(("top-b".to_string(), "Top b".to_string()))
+                ),
             ]
         );
     }

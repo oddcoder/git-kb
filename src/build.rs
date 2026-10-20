@@ -25,6 +25,7 @@ use tracing::debug;
 use crate::config::LookConfig;
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
+use crate::graph::Graph;
 use crate::nav::{Nav, Pages};
 use crate::render::{Moved, Renderer};
 use crate::shell::{self, Comparison, Links, Margin, PageHistory, PageState, Shell, Version};
@@ -65,6 +66,7 @@ struct Past<'a> {
 struct Within<'a> {
     shell: &'a Shell,
     pages: &'a Pages,
+    graph: &'a Graph,
     readmes: &'a BTreeMap<PathBuf, String>,
     past: Option<&'a Past<'a>>,
 }
@@ -215,11 +217,13 @@ impl Builder {
         // Every file first, so that each page knows, as it is rendered, which folders are shown by their
         // README: those with one and without an index.md, each with its README's page.
         let readmes = Self::readmes(files);
-        let pages = Pages::new(files, &self.renderer, |f| {
+        let text = |f: &Path| {
             read(f)
                 .ok()
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        });
+        };
+        let pages = Pages::new(files, &self.renderer, text);
+        let graph = Graph::new(files, &self.renderer, text);
         for path in files {
             let markdown = path
                 .extension()
@@ -245,6 +249,7 @@ impl Builder {
                 let within = Within {
                     shell,
                     pages: &pages,
+                    graph: &graph,
                     readmes: &readmes,
                     past,
                 };
@@ -269,6 +274,11 @@ impl Builder {
                 built.files += 1;
             }
         }
+        // The graph of every page and link.
+        fs::create_dir_all(to)?;
+        let body = shell.graph_page(Path::new(""), &graph, &pages);
+        let page = shell.page(Path::new(""), "_graph.html", "Graph", &body, &Nav::none());
+        fs::write(to.join("_graph.html"), page)?;
         // Its search: a page that searches, in the browser, the index beside it.
         let index = crate::search::Index::new(files, &self.renderer, |f| {
             read(f)
@@ -281,6 +291,7 @@ impl Builder {
             pages: &pages,
             current: Path::new(""),
             headings: &[],
+            graph: None,
         };
         let body = shell.search_page(Path::new(""));
         fs::write(
@@ -372,6 +383,7 @@ impl Builder {
             pages,
             current: path,
             headings: &page.headings,
+            graph: Some(within.graph),
         };
         let body = shell.noted(at, path, &page.html, history);
         let body = Shell::with_source(&body, &self.renderer.source(markdown));
@@ -485,6 +497,7 @@ impl Builder {
             pages: page.pages,
             current: page.path,
             headings: &[],
+            graph: None,
         };
         let title = format!("Changes to {}", page.title);
         let html = page
@@ -590,6 +603,7 @@ impl Builder {
             pages,
             current: path,
             headings: &[],
+            graph: None,
         };
         shell.page(path, "", &name, &body, &nav)
     }
@@ -784,9 +798,12 @@ mod tests {
                 .build()
                 .flatten()
                 .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-                // The style sheet and the search are in every site; tests of their own see them.
+                // The style sheet, the search and the graph are in every site; tests of their own see them.
                 .filter(|e| !e.path().starts_with(root.join("_assets")))
-                .filter(|e| !e.file_name().to_string_lossy().starts_with("_search."))
+                .filter(|e| {
+                    let name = e.file_name().to_string_lossy();
+                    !name.starts_with("_search.") && name != "_graph.html"
+                })
                 .map(|e| {
                     e.path()
                         .strip_prefix(&root)
@@ -1331,6 +1348,31 @@ mod tests {
                 .contains(r#""href":"arch/dma.html""#)
         );
         assert_eq!(tree.read("site/_assets/search.js"), shell::SEARCH);
+    }
+
+    #[test]
+    fn a_built_page_shows_its_links_and_the_graph_of_every_page() {
+        let tree = Tree::with(&[
+            ("docs/arch/a.md", b"# A\n\nSee [B](../b.md).\n"),
+            ("docs/b.md", b"# B\n"),
+        ]);
+        Builder::default()
+            .build(&tree.path("docs"), &tree.path("site"))
+            .unwrap();
+        let a = tree.read("site/docs/arch/a.html");
+        assert!(
+            a.contains(r#"<a class="ref" href="../b.html"><span class="dir">→</span> B</a>"#),
+            "{a}"
+        );
+        assert!(
+            a.contains(r#"<a class="graph-all" href="../_graph.html""#),
+            "{a}"
+        );
+        assert!(
+            tree.read("site/docs/_graph.html")
+                .contains(r#"class="kb-graph full""#)
+        );
+        assert_eq!(tree.read("site/_assets/graph.js"), shell::GRAPH);
     }
 
     #[test]

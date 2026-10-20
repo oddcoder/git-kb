@@ -15,6 +15,7 @@ use crate::nav::Nav;
 
 mod compare;
 mod history;
+mod links;
 mod margin;
 mod search;
 
@@ -38,12 +39,17 @@ pub const LAYOUT_PATH: &str = "_assets/layout.js";
 pub const SEARCH: &str = include_str!(concat!(env!("OUT_DIR"), "/search.js"));
 pub const SEARCH_PATH: &str = "_assets/search.js";
 
+/// The script that draws the graph of pages, compiled from `web/src/graph.ts`, and where it is in the site.
+pub const GRAPH: &str = include_str!(concat!(env!("OUT_DIR"), "/graph.js"));
+pub const GRAPH_PATH: &str = "_assets/graph.js";
+
 /// The files every page uses, by their paths in the site.
-pub const ASSETS: [(&str, &str); 4] = [
+pub const ASSETS: [(&str, &str); 5] = [
     (STYLE_PATH, STYLE),
     (LOOK_PATH, LOOK),
     (LAYOUT_PATH, LAYOUT),
     (SEARCH_PATH, SEARCH),
+    (GRAPH_PATH, GRAPH),
 ];
 
 /// How a site's pages link to the rest of it.
@@ -170,7 +176,7 @@ impl Shell {
                 "<!doctype html>\n<html lang=\"en\"{look}>\n<head>\n<meta charset=\"utf-8\">\n",
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
                 "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n",
-                "<script src=\"{script}\"></script>\n<script src=\"{layout}\"></script>\n</head>\n<body>\n",
+                "<script src=\"{script}\"></script>\n<script src=\"{layout}\"></script>\n<script src=\"{graph}\" defer></script>\n</head>\n<body>\n",
                 "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}{revisions}{search}</header>\n",
                 "<div class=\"layout\">\n{side}<main class=\"page\">\n{trail}{body}",
                 "<div class=\"edge edge-left\" title=\"Drag to move the text; let go near the middle to centre it\"></div>",
@@ -193,6 +199,7 @@ impl Shell {
             style = self.asset(at, STYLE_PATH),
             script = self.asset(at, LOOK_PATH),
             layout = self.asset(at, LAYOUT_PATH),
+            graph = self.asset(at, GRAPH_PATH),
             top = self.folder(at, Path::new("")),
             name = Self::escape(&self.name),
             side = self.side(at, nav),
@@ -205,6 +212,7 @@ impl Shell {
     fn side(&self, at: &Path, nav: &Nav) -> String {
         let mut side = String::from("<aside class=\"side\">\n");
         side.push_str(&Self::contents(nav));
+        side.push_str(&self.links(at, nav));
         let tree = self.tree(at, nav, Path::new(""));
         if tree != "<ul></ul>" {
             let _ = writeln!(
@@ -542,6 +550,7 @@ mod tests {
             pages: &pages,
             current: Path::new("arch/dma.md"),
             headings: &[],
+            graph: None,
         };
         let served =
             Shell::new("docs".into(), Links::Served).page(Path::new("arch"), "", "", "", &nav);

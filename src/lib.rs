@@ -5,6 +5,7 @@ pub mod cli;
 pub mod config;
 pub mod diff;
 pub mod git;
+pub mod graph;
 pub mod live;
 pub mod nav;
 pub mod render;

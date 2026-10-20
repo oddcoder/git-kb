@@ -41,6 +41,7 @@ use crate::build::{Builder, Folder};
 use crate::config::LookConfig;
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
+use crate::graph::Graph;
 use crate::live::Live;
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
@@ -171,6 +172,9 @@ impl Server {
         if path == "/_search" {
             return self.search(query.unwrap_or(""));
         }
+        if path == "/_graph" {
+            return self.graph_page(query.unwrap_or(""));
+        }
         let (snapshot, rest) = if let Some(rest) = path.strip_prefix("/docs") {
             if rest.is_empty() {
                 return Redirect::permanent("/docs/").into_response();
@@ -203,26 +207,51 @@ impl Server {
         }
     }
 
+    /// A query's value, by its name, decoded.
+    fn param(query: &str, name: &str) -> Option<String> {
+        query.split('&').find_map(|kv| {
+            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+            (k == name).then(|| {
+                percent_decode_str(&v.replace('+', " "))
+                    .decode_utf8_lossy()
+                    .into_owned()
+            })
+        })
+    }
+
+    /// What a request of the site's own, as `/_search`, is answered from: the folder as it is, or the commit its
+    /// query's `ref` names.
+    fn view_of(&self, query: &str) -> Result<View<'_>, Box<Response>> {
+        let snapshot = Self::param(query, "ref")
+            .map(|name| self.snapshot(&name))
+            .transpose()
+            .map_err(|e| Box::new(self.missing(&format!("{e:#}"))))?;
+        self.view(snapshot).map_err(|e| Box::new(self.failed(&e)))
+    }
+
+    /// The graph of every page and link, as a page.
+    fn graph_page(&self, query: &str) -> Response {
+        let view = match self.view_of(query) {
+            Ok(view) => view,
+            Err(answer) => return *answer,
+        };
+        let (pages, graph) = (view.pages(), view.graph());
+        let body = view.shell.graph_page(Path::new(""), &graph, &pages);
+        let nav = Nav {
+            pages: &pages,
+            current: Path::new(""),
+            headings: &[],
+            graph: None,
+        };
+        Html(view.shell.page(Path::new(""), "", "Graph", &body, &nav)).into_response()
+    }
+
     /// What a search finds: in the folder as it is, or at the commit `ref` names.
     fn search(&self, query: &str) -> Response {
-        let param = |name: &str| {
-            query.split('&').find_map(|kv| {
-                let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-                (k == name).then(|| {
-                    percent_decode_str(&v.replace('+', " "))
-                        .decode_utf8_lossy()
-                        .into_owned()
-                })
-            })
-        };
-        let (asked, rev) = (param("q").unwrap_or_default(), param("ref"));
-        let snapshot = match rev.as_deref().map(|name| self.snapshot(name)).transpose() {
-            Ok(snapshot) => snapshot,
-            Err(e) => return self.missing(&format!("{e:#}")),
-        };
-        let view = match self.view(snapshot) {
+        let asked = Self::param(query, "q").unwrap_or_default();
+        let view = match self.view_of(query) {
             Ok(view) => view,
-            Err(e) => return self.failed(&e),
+            Err(answer) => return *answer,
         };
         let index = crate::search::Index::new(&view.files, &self.renderer, |f| {
             view.read(f)
@@ -236,6 +265,7 @@ impl Server {
             pages: &pages,
             current: Path::new(""),
             headings: &[],
+            graph: None,
         };
         Html(shell.page(Path::new(""), "", "Search", &body, &nav)).into_response()
     }
@@ -424,6 +454,15 @@ impl View<'_> {
         })
     }
 
+    /// The links between the site's pages.
+    fn graph(&self) -> Graph {
+        Graph::new(&self.files, &self.server.renderer, |f| {
+            self.read(f)
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        })
+    }
+
     /// A folder's page: its `index.md`, or else its `README.md`, or else a list of its folders and pages.
     fn folder(&self, at: &Path) -> Response {
         let pages = self.pages();
@@ -458,10 +497,12 @@ impl View<'_> {
         let title = page.title.unwrap_or_else(|| Server::stem(file));
         let at = file.parent().unwrap_or(Path::new(""));
         let pages = self.pages();
+        let graph = self.graph();
         let nav = Nav {
             pages: &pages,
             current: file,
             headings: &page.headings,
+            graph: Some(&graph),
         };
         let body = self
             .shell
@@ -508,6 +549,7 @@ impl View<'_> {
             pages: &pages,
             current: file,
             headings: &[],
+            graph: None,
         };
         let title = format!("History of {title}");
         Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
@@ -567,6 +609,7 @@ impl View<'_> {
             pages: &pages,
             current: file,
             headings: &[],
+            graph: None,
         };
         let body = self.shell.compare(&comparison);
         let title = format!("Changes to {title}");
@@ -589,6 +632,7 @@ impl View<'_> {
             pages: &pages,
             current: Path::new(""),
             headings: &[],
+            graph: None,
         };
         (
             StatusCode::NOT_FOUND,
@@ -1036,6 +1080,42 @@ mod tests {
         assert!(
             page.contains(r#"<input type="hidden" name="ref" value="main">"#),
             "{page}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_shows_its_links_and_the_graph_of_them() {
+        let site = Site::with(&[
+            (
+                "docs/a.md",
+                b"# A\n\n## Part\n\nSee [B](b.md) and [gone](gone.md).\n",
+            ),
+            ("docs/b.md", b"# B\n\nBack to [A](a.md).\n"),
+            ("docs/c.md", b"# C\n"),
+        ]);
+        let a = site.get("/docs/a.md").await.2;
+        assert!(
+            a.contains(r#"<a class="ref" href="/docs/b.html"><span class="dir">↔</span> B</a>"#),
+            "{a}"
+        );
+        assert!(
+            a.contains(r##"<a class="spot" href="#part">→ Part</a>"##),
+            "{a}"
+        );
+        assert!(
+            a.contains(r#"<a class="spot" href="/docs/b.html">← top</a>"#),
+            "{a}"
+        );
+        assert!(a.contains(r#"<span class="ref missing" title="No such page"><span class="dir">→</span> gone.md</span>"#), "{a}");
+        assert!(a.contains(r#"<div class="kb-graph" data-graph=""#), "{a}");
+        assert!(
+            !site.get("/docs/c.md").await.2.contains("refs-list"),
+            "a page with no links has none"
+        );
+        let graph = site.get("/_graph").await.2;
+        assert!(
+            graph.contains(r#"<div class="kb-graph full""#) && graph.contains("gone.md (missing)"),
+            "{graph}"
         );
     }
 
