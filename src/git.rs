@@ -22,7 +22,12 @@ pub struct Repo {
     files: Mutex<HashMap<ObjectId, Arc<BTreeMap<PathBuf, ObjectId>>>>,
     /// The history up to each commit, by its id.
     histories: Mutex<HashMap<ObjectId, Arc<History>>>,
+    /// Who last changed each line of a page at a commit, by the commit's id and the page.
+    blames: Mutex<HashMap<(ObjectId, PathBuf), Arc<Blame>>>,
 }
+
+/// The commit that last changed each line of a page, by line from 0; `None` for a line not committed yet.
+pub type Blame = Vec<Option<Change>>;
 
 /// A commit, by the name it was asked for by, as `main`, and its id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +48,13 @@ pub struct Change {
     pub time: i64,
     pub author: String,
     pub summary: String,
+    /// Whether it is a first commit, with none before it.
+    pub first: bool,
 }
+
+/// A time, in seconds since 1970, as people say it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct When(pub i64);
 
 /// The commits up to one that changed the site's pages, newest first: each with the pages it made, edited or
 /// removed, against the commit before it; and, for each page, the commits that changed it.
@@ -82,6 +93,7 @@ impl Repo {
             prefix,
             files: Mutex::default(),
             histories: Mutex::default(),
+            blames: Mutex::default(),
         })
     }
 
@@ -182,14 +194,7 @@ impl Repo {
             if pages.is_empty() {
                 continue;
             }
-            let commit = info.object()?;
-            let change = Change {
-                id: info.id,
-                short: commit.id().shorten_or_id().to_string(),
-                time: commit.time()?.seconds,
-                author: commit.author()?.name.to_string(),
-                summary: commit.message()?.summary().to_string(),
-            };
+            let change = Self::change(&info.object()?)?;
             for page in &pages {
                 history
                     .pages
@@ -237,6 +242,96 @@ impl Repo {
             }
         }
         Ok(snapshots)
+    }
+
+    /// Who last changed each line of a page at a snapshot's commit; given `now`, the page's text on disk, of
+    /// that text instead, its lines not at the commit not committed yet.
+    ///
+    /// # Errors
+    ///
+    /// When the page is not at the commit, or its history cannot be read.
+    pub fn blame(
+        &self,
+        snapshot: &Snapshot,
+        page: &Path,
+        now: Option<&[u8]>,
+    ) -> anyhow::Result<Arc<Blame>> {
+        let blame = self.blame_at(snapshot, page)?;
+        let Some(now) = now else {
+            return Ok(blame);
+        };
+        let committed = self.read(snapshot, page)?;
+        // The lines on disk as they were at the commit keep its blame; the rest are not committed yet.
+        let (old, new) = (
+            String::from_utf8_lossy(&committed),
+            String::from_utf8_lossy(now),
+        );
+        let diff = similar::TextDiff::from_lines(old.as_ref(), new.as_ref());
+        let mut lines: Blame = vec![None; new.split_inclusive('\n').count()];
+        for op in diff.ops() {
+            if let similar::DiffOp::Equal {
+                old_index,
+                new_index,
+                len,
+            } = *op
+            {
+                for i in 0..len {
+                    lines[new_index + i] = blame.get(old_index + i).cloned().flatten();
+                }
+            }
+        }
+        Ok(Arc::new(lines))
+    }
+
+    /// Who last changed each line of a page at a snapshot's commit, worked out once.
+    fn blame_at(&self, snapshot: &Snapshot, page: &Path) -> anyhow::Result<Arc<Blame>> {
+        let key = (snapshot.revision.id, page.to_path_buf());
+        let kept = self
+            .blames
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        if let Some(blame) = kept {
+            return Ok(blame);
+        }
+        let repo = self.git.to_thread_local();
+        let path = gix::path::into_bstr(self.prefix.join(page))?.into_owned();
+        let options = gix::repository::blame_file::Options::default();
+        let outcome = repo.blame_file(path.as_ref(), snapshot.revision.id, options)?;
+        let lines = outcome.blob.split_inclusive(|b| *b == b'\n').count();
+        let mut blame: Blame = vec![None; lines];
+        let mut changes: HashMap<ObjectId, Change> = HashMap::new();
+        for entry in &outcome.entries {
+            let change = match changes.entry(entry.commit_id) {
+                std::collections::hash_map::Entry::Occupied(kept) => kept.into_mut(),
+                std::collections::hash_map::Entry::Vacant(new) => {
+                    new.insert(Self::change(&repo.find_commit(entry.commit_id)?)?)
+                }
+            };
+            let start = entry.start_in_blamed_file as usize;
+            for line in blame.iter_mut().skip(start).take(entry.len.get() as usize) {
+                *line = Some(change.clone());
+            }
+        }
+        let blame = Arc::new(blame);
+        self.blames
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, Arc::clone(&blame));
+        Ok(blame)
+    }
+
+    /// What a commit says of itself.
+    fn change(commit: &gix::Commit) -> anyhow::Result<Change> {
+        Ok(Change {
+            id: commit.id,
+            short: commit.id().shorten_or_id().to_string(),
+            time: commit.time()?.seconds,
+            author: commit.author()?.name.to_string(),
+            summary: commit.message()?.summary().to_string(),
+            first: commit.parent_ids().next().is_none(),
+        })
     }
 
     /// A file of a snapshot, as it was at its commit.
@@ -331,7 +426,21 @@ impl Change {
     /// How long before `now`, both in seconds since 1970, it was made, as people say it: `3 days ago`.
     #[must_use]
     pub fn ago(&self, now: i64) -> String {
-        let s = (now - self.time).max(0);
+        When(self.time).ago(now)
+    }
+
+    /// The day it was made, in UTC: `2026-10-15`.
+    #[must_use]
+    pub fn date(&self) -> String {
+        When(self.time).date()
+    }
+}
+
+impl When {
+    /// How long before `now` it was: `3 days ago`.
+    #[must_use]
+    pub fn ago(self, now: i64) -> String {
+        let s = (now - self.0).max(0);
         let (n, unit) = match s {
             0..60 => return "just now".into(),
             60..3600 => (s / 60, "minute"),
@@ -343,11 +452,11 @@ impl Change {
         format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
     }
 
-    /// The day it was made, in UTC: `2026-10-15`.
+    /// Its day, in UTC: `2026-10-15`.
     #[must_use]
-    pub fn date(&self) -> String {
+    pub fn date(self) -> String {
         // Days to a civil date, after Howard Hinnant's civil_from_days.
-        let z = self.time.div_euclid(86_400) + 719_468;
+        let z = self.0.div_euclid(86_400) + 719_468;
         let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
         let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
         let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
@@ -356,6 +465,16 @@ impl Change {
         let month = if mp < 10 { mp + 3 } else { mp - 9 };
         let year = yoe + era * 400 + i64::from(month <= 2);
         format!("{year:04}-{month:02}-{day:02}")
+    }
+
+    /// Now.
+    #[must_use]
+    pub fn now() -> Self {
+        Self(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX)),
+        )
     }
 }
 
@@ -565,6 +684,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn each_line_is_blamed_on_the_commit_that_last_changed_it() {
+        let git = Git::new();
+        git.write("docs/a.md", "one\ntwo\n");
+        git.commit("first");
+        git.write("docs/a.md", "one\nTWO\n");
+        git.commit("second");
+        let repo = Repo::discover(&git.top().join("docs")).unwrap();
+        let head = repo.snapshot("HEAD").unwrap();
+        let blame = repo.blame(&head, Path::new("a.md"), None).unwrap();
+        let said: Vec<Option<&str>> = blame
+            .iter()
+            .map(|c| c.as_ref().map(|c| c.summary.as_str()))
+            .collect();
+        assert_eq!(said, [Some("first"), Some("second")]);
+        assert!(blame[0].as_ref().unwrap().first);
+        let now = repo
+            .blame(&head, Path::new("a.md"), Some(b"zero\none\nTWO\n"))
+            .unwrap();
+        let said: Vec<Option<&str>> = now
+            .iter()
+            .map(|c| c.as_ref().map(|c| c.summary.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [None, Some("first"), Some("second")],
+            "a line not committed yet is no one's"
+        );
+    }
+
+    #[test]
     fn a_change_says_when_it_was_made() {
         let change = Change {
             id: ObjectId::null(gix::hash::Kind::Sha1),
@@ -572,6 +721,7 @@ pub(crate) mod tests {
             time: 1_760_486_400,
             author: "T".into(),
             summary: String::new(),
+            first: true,
         };
         assert_eq!(change.date(), "2025-10-15");
         assert_eq!(change.ago(change.time + 30), "just now");

@@ -78,6 +78,54 @@ impl Diff {
         diff
     }
 
+    /// How one block of a page came to be what it is: compared with the block most like it in an older version
+    /// of the page. Prose shows its changed words; code and tables their changed source lines.
+    #[must_use]
+    pub fn block(
+        old_page: &str,
+        new_page: &str,
+        block: &str,
+        renderer: &Renderer,
+        moved: Moved,
+    ) -> String {
+        let new_words = Self::source(block);
+        let best = renderer
+            .blocks(old_page)
+            .into_iter()
+            .map(|o| (Self::likeness(&Self::source(o), &new_words), o))
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        if best.is_some_and(|(_, o)| o == block.trim_end()) {
+            return "<p class=\"muted\">The same as before.</p>".into();
+        }
+        let render = |block: &str, page: &str| {
+            Self::without_ids(
+                &renderer
+                    .render_with(&format!("{block}\n\n{}", renderer.references(page)), moved)
+                    .html,
+            )
+        };
+        let new = render(block, new_page);
+        let old = best
+            .filter(|(likeness, _)| *likeness >= 0.3)
+            .map(|(_, o)| o);
+        if !Self::prose(&new) {
+            return Self::lines(old.unwrap_or(""), block);
+        }
+        match old {
+            Some(o) => {
+                let old = render(o, old_page);
+                if Self::alike(&old, &new) {
+                    Self::words(&old, &new)
+                } else {
+                    format!(
+                        "<div class=\"diff-del\">{old}</div><div class=\"diff-ins\">{new}</div>"
+                    )
+                }
+            }
+            None => format!("<div class=\"diff-ins\">{new}</div>"),
+        }
+    }
+
     /// Two texts compared line by line, as a listing with each line marked as kept, removed or added.
     #[must_use]
     pub fn lines(old: &str, new: &str) -> String {
@@ -102,6 +150,11 @@ impl Diff {
         }
         out.push_str("</code></pre>");
         out
+    }
+
+    /// A block's source, as words, to find the block most like it.
+    fn source(block: &str) -> Vec<&str> {
+        block.split_whitespace().collect()
     }
 
     /// HTML with its ids taken out, so that a copy of a heading, in a comparison or a hidden tab, is not where a
@@ -299,6 +352,28 @@ mod tests {
             "{}",
             moved.html
         );
+    }
+
+    #[test]
+    fn a_block_is_compared_with_the_one_most_like_it() {
+        let r = Renderer::new();
+        let old = "# A\n\nThe quick brown fox jumps over the dog.\n\nOther.\n";
+        let new = "# A\n\nThe quick red fox jumps over the dog.\n\nOther.\n";
+        let edited = Diff::block(
+            old,
+            new,
+            "The quick red fox jumps over the dog.",
+            &r,
+            &|_| None,
+        );
+        assert!(
+            edited.contains("<del>brown</del><ins>red</ins>"),
+            "{edited}"
+        );
+        let same = Diff::block(old, new, "Other.", &r, &|_| None);
+        assert!(same.contains("The same as before."), "{same}");
+        let added = Diff::block(old, new, "Something else entirely.", &r, &|_| None);
+        assert!(added.starts_with(r#"<div class="diff-ins">"#), "{added}");
     }
 
     #[test]

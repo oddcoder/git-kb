@@ -26,8 +26,8 @@ use crate::config::LookConfig;
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
 use crate::nav::{Nav, Pages};
-use crate::render::Renderer;
-use crate::shell::{self, Comparison, Links, PageHistory, PageState, Shell, Version};
+use crate::render::{Moved, Renderer};
+use crate::shell::{self, Comparison, Links, Margin, PageHistory, PageState, Shell, Version};
 
 /// What a build wrote.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -54,8 +54,19 @@ pub(crate) struct Folder {
 /// the last commit, to tell which pages have changed since.
 struct Past<'a> {
     repo: &'a Repo,
+    /// The commit built: the last, for the folder as it is.
+    at: Arc<Snapshot>,
     history: Arc<History>,
     head: Option<Arc<Snapshot>>,
+}
+
+/// What each page of one site is built within: its shell, the site's pages, the folders shown by their README,
+/// and the site's history, when there is one.
+struct Within<'a> {
+    shell: &'a Shell,
+    pages: &'a Pages,
+    readmes: &'a BTreeMap<PathBuf, String>,
+    past: Option<&'a Past<'a>>,
 }
 
 /// A page being built, for what is written of it besides itself.
@@ -125,6 +136,7 @@ impl Builder {
         let past = match (&repo, &head) {
             (Some(repo), Some(head)) => Some(Past {
                 repo,
+                at: Arc::clone(head),
                 history: repo.history(head)?,
                 head: Some(Arc::clone(head)),
             }),
@@ -143,6 +155,7 @@ impl Builder {
                 let to = out.join("ref").join(&snapshot.revision.name);
                 let of = Past {
                     repo,
+                    at: Arc::clone(snapshot),
                     history: repo.history(snapshot)?,
                     head: None,
                 };
@@ -229,7 +242,13 @@ impl Builder {
                     path,
                     &bytes,
                 );
-                let (html, title) = self.page(shell, &pages, &text, path, &readmes, &history);
+                let within = Within {
+                    shell,
+                    pages: &pages,
+                    readmes: &readmes,
+                    past,
+                };
+                let (html, title) = self.page(&within, &text, path, &history);
                 fs::write(&into, html).with_context(|| into.display().to_string())?;
                 if let Some(past) = past {
                     let page = Page {
@@ -313,16 +332,17 @@ impl Builder {
     /// its file's name.
     fn page(
         &self,
-        shell: &Shell,
-        pages: &Pages,
+        within: &Within,
         markdown: &str,
         path: &Path,
-        readmes: &BTreeMap<PathBuf, String>,
         history: &PageHistory,
     ) -> (String, String) {
-        let page = self
-            .renderer
-            .render_with(markdown, &|dest| Self::moved(path, dest, readmes));
+        let (shell, pages) = (within.shell, within.pages);
+        let moved = |dest: &str| Self::moved(path, dest, within.readmes);
+        let page = match within.past {
+            Some(past) => self.marked(shell, markdown, path, &moved, past),
+            None => self.renderer.render_with(markdown, &moved),
+        };
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
         let title = page.title.unwrap_or_else(|| name.into_owned());
         let at = path.parent().unwrap_or(Path::new(""));
@@ -335,6 +355,33 @@ impl Builder {
         };
         let body = shell.noted(at, path, &page.html, history);
         (shell.page(at, &file, &title, &body, &nav), title)
+    }
+
+    /// A page rendered with each block marked in its margin with when it last changed.
+    fn marked(
+        &self,
+        shell: &Shell,
+        markdown: &str,
+        path: &Path,
+        moved: Moved,
+        past: &Past,
+    ) -> crate::render::Page {
+        // The folder as it is is blamed as it is on disk, its lines not committed yet as such.
+        let now = past.head.is_some().then_some(markdown.as_bytes());
+        let Ok(blame) = past.repo.blame(&past.at, path, now) else {
+            return self.renderer.render_with(markdown, moved);
+        };
+        let margin = Margin::new(
+            shell,
+            path,
+            markdown,
+            &blame,
+            past.repo,
+            &self.renderer,
+            moved,
+        );
+        self.renderer
+            .render_marked(markdown, moved, &|range| margin.mark(range))
     }
 
     /// A page's comparisons, beside it: what each commit that changed it changed, and, in the folder as it is,
@@ -1229,6 +1276,14 @@ mod tests {
             read(Path::new("ref/main/a.html")).contains(r#"(<a href="./a~"#),
             "a page links what its last commit changed"
         );
+        let margin = read(Path::new("ref/main/a.html"));
+        assert!(margin.contains(r#"<button class="blame""#), "{margin}");
+        assert!(
+            margin.contains(r#"<a href="./a~"#)
+                && margin.contains("Everything this commit changed"),
+            "{margin}"
+        );
+        assert!(read(Path::new("docs/a.html")).contains(r#"<div class="blk new">"#));
     }
 
     #[test]

@@ -5,10 +5,9 @@
 
 use std::fmt::Write;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{Links, Shell};
-use crate::git::{Change, History, Revision, Snapshot};
+use crate::git::{Change, History, Revision, Snapshot, When};
 
 /// Where a page stands against the last commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +96,7 @@ impl Shell {
                 Links::Served => format!(
                     "<span title=\"{}\">{}</span>",
                     last.date(),
-                    last.ago(Self::now())
+                    last.ago(When::now().0)
                 ),
                 Links::Built => format!("on {}", last.date()),
             };
@@ -224,12 +223,5 @@ impl Shell {
             // The list is at ref/index.html, beside the branches' and tags' own folders.
             Links::Built => format!("{}/index.html", Self::encode(Path::new(&revision.name))),
         }
-    }
-
-    /// The time now, in seconds since 1970.
-    fn now() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
     }
 }

@@ -193,6 +193,28 @@ pre code { padding: 0; font-size: 100%; background: none; }
 .hl-variable { color: var(--code-variable); }
 .hl-invalid { color: var(--code-keyword); text-decoration: underline wavy; }
 
+/* A page's margin: beside each block, on hover, when it last changed; clicked, a card of how it changed. A block
+   not committed yet is marked so. */
+.blk { position: relative; }
+.blk::before { content: ""; position: absolute; top: 2px; bottom: 2px; left: -16px; width: 3px; border-radius: 2px; }
+.blk:hover::before { background: var(--line); }
+.blk.new::before { background: light-dark(#d4a72c, #bb8009); }
+.blame { position: absolute; bottom: 100%; left: -4px; z-index: 1; padding: 0 4px; border: 0; border-radius: 4px;
+         background: var(--page); color: var(--muted); font: 11px/16px var(--text-font); white-space: nowrap;
+         cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+.blk:hover > .blame { opacity: 1; pointer-events: auto; }
+.blame:hover, .blk:has(> .pop:popover-open) > .blame { opacity: 1; color: var(--accent); }
+.pop { width: min(640px, 90vw); max-height: 70vh; overflow: auto; margin: auto; padding: 12px 16px;
+       border: 1px solid var(--line); border-radius: 10px; background: var(--page); color: var(--text);
+       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2); font-size: 14px; }
+.pop::backdrop { background: transparent; }
+@supports (anchor-name: --a) { .pop { margin: 4px 0 0; position-area: bottom span-right; } }
+.pop-head { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.pop-head b { color: var(--text); }
+.pop-body > :last-child { margin-bottom: 0; }
+.pop-body .diff-ins, .pop-body .diff-del { margin-left: 0; }
+.pop-foot { margin: 12px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; }
+
 /* Two versions of a page compared: tabs for the changes in place, each version, and the source by line. */
 .tabs { display: inline-flex; margin: 0 0 16px; padding: 2px; border: 1px solid var(--line); border-radius: 8px;
         background: var(--subtle); }

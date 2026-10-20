@@ -74,6 +74,16 @@ impl Heading {
 /// Where a link's or image's target is now, given it as written, if it has moved.
 pub type Moved<'a> = &'a dyn Fn(&str) -> Option<String>;
 
+/// A mark beside a top-level block of a page: a class for the block's wrapper, and the HTML that goes in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mark {
+    pub class: &'static str,
+    pub html: String,
+}
+
+/// The mark for the block at a range of a page's text, if it has one.
+pub type Marks<'a> = &'a dyn Fn(std::ops::Range<usize>) -> Option<Mark>;
+
 /// Renders Markdown as HTML. What it holds is how it renders, so that what later features need, such as a
 /// highlighter, is made once and kept, not made again for every page.
 #[derive(Debug, Clone)]
@@ -185,11 +195,36 @@ impl Renderer {
     /// says, as a built site's pages are `.html` files rather than `.md`.
     #[must_use]
     pub fn render_with(&self, markdown: &str, moved: Moved) -> Page {
+        self.render_marked(markdown, moved, &|_| None)
+    }
+
+    /// The same, with each top-level block that `marks` gives a mark wrapped in `<div class="blk">`, holding
+    /// its mark, so that the block can show it.
+    #[must_use]
+    pub fn render_marked(&self, markdown: &str, moved: Moved, marks: Marks) -> Page {
+        let ranges = self.block_ranges(markdown);
+        let (mut depth, mut block, mut open) = (0usize, 0usize, false);
         let mut ids = Ids::default();
         let mut headings = vec![];
         let mut out = vec![];
         let mut events = Parser::new_ext(markdown, self.options);
         while let Some(event) = events.next() {
+            if depth == 0 && matches!(event, Event::Start(_) | Event::Rule | Event::Html(_)) {
+                if let Some(mark) = ranges.get(block).cloned().and_then(marks) {
+                    out.push(Event::Html(
+                        format!("<div class=\"blk {}\">{}", mark.class, mark.html).into(),
+                    ));
+                    open = true;
+                }
+                block += 1;
+            }
+            // Headings and code blocks are read whole, below, so they leave the depth as it was.
+            match &event {
+                Event::Start(Tag::Heading { .. } | Tag::CodeBlock(_)) => {}
+                Event::Start(_) => depth += 1,
+                Event::End(_) => depth -= 1,
+                _ => {}
+            }
             match event {
                 Event::Start(Tag::Heading {
                     level,
@@ -229,6 +264,10 @@ impl Renderer {
                     id,
                 })),
                 event => out.push(event),
+            }
+            if depth == 0 && open {
+                out.push(Event::Html("</div>".into()));
+                open = false;
             }
         }
         Page::new(out, headings)
@@ -451,6 +490,28 @@ mod tests {
             "{}",
             alone.html
         );
+    }
+
+    #[test]
+    fn each_block_marked_is_wrapped_with_its_mark() {
+        let page = "# Title\n\nOne.\n\n- a\n- b\n\n```\ncode\n```\n";
+        let html = Renderer::new()
+            .render_marked(page, &|_| None, &|range| {
+                Some(Mark {
+                    class: "x",
+                    html: format!("<i>{}</i>", range.start),
+                })
+            })
+            .html;
+        for wanted in [
+            "<div class=\"blk x\"><i>0</i>\n<h1 id=\"title\">Title</h1>\n</div>",
+            "<div class=\"blk x\"><i>9</i>\n<p>One.</p>\n</div>",
+            "<li>b</li>\n</ul>\n</div>",
+            "<i>",
+        ] {
+            assert!(html.contains(wanted), "{wanted} missing from {html}");
+        }
+        assert_eq!(html.matches("</div>").count(), 4, "{html}");
     }
 
     #[test]

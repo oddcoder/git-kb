@@ -44,7 +44,7 @@ use crate::git::{History, Repo, Snapshot};
 use crate::live::Live;
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
-use crate::shell::{self, Comparison, Links, PageHistory, Shell, Version};
+use crate::shell::{self, Comparison, Links, Margin, PageHistory, Shell, Version};
 
 /// Serves a folder of Markdown.
 #[derive(Debug)]
@@ -405,10 +405,8 @@ impl View<'_> {
             let kind = mime_guess::from_path(file).first_or_octet_stream();
             return ([(header::CONTENT_TYPE, kind.to_string())], bytes).into_response();
         }
-        let page = self
-            .server
-            .renderer
-            .render(&String::from_utf8_lossy(&bytes));
+        let text = String::from_utf8_lossy(&bytes);
+        let page = self.render(file, &text, &bytes);
         let title = page.title.unwrap_or_else(|| Server::stem(file));
         let at = file.parent().unwrap_or(Path::new(""));
         let pages = self.pages();
@@ -421,6 +419,24 @@ impl View<'_> {
             .shell
             .noted(at, file, &page.html, &self.page_history(file, &bytes));
         Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
+    }
+
+    /// A page rendered, each block marked in its margin with when it last changed, when git knows.
+    fn render(&self, file: &Path, text: &str, bytes: &[u8]) -> crate::render::Page {
+        let renderer = &self.server.renderer;
+        let (Some(repo), Some(at)) = (
+            &self.server.repo,
+            self.snapshot.as_ref().or(self.head.as_ref()),
+        ) else {
+            return renderer.render(text);
+        };
+        // The folder as it is is blamed as it is on disk, its lines not committed yet as such.
+        let now = self.snapshot.is_none().then_some(bytes);
+        let Ok(blame) = repo.blame(at, file, now) else {
+            return renderer.render(text);
+        };
+        let margin = Margin::new(&self.shell, file, text, &blame, repo, renderer, &|_| None);
+        renderer.render_marked(text, &|_| None, &|range| margin.mark(range))
     }
 
     /// A page's history, as a page: the commits that changed it.
@@ -876,6 +892,41 @@ mod tests {
             site.get("/docs/a.md?diff=nope").await.0,
             StatusCode::NOT_FOUND
         );
+    }
+
+    #[tokio::test]
+    async fn each_block_says_when_it_last_changed() {
+        let git = crate::git::tests::Git::new();
+        git.write("docs/a.md", "# A\n\nThe quick brown fox.\n");
+        git.commit("write a");
+        git.write("docs/a.md", "# A\n\nThe quick red fox.\n");
+        git.commit("edit a");
+        git.write("docs/a.md", "# A\n\nThe quick red fox.\n\nNot committed.\n");
+        let site = Site::of(git.top().join("docs"));
+        let page = site.get("/docs/a.md").await.2;
+        assert!(
+            page.contains(r#"<div class="blk ">"#) && page.contains("· T · "),
+            "{page}"
+        );
+        assert!(
+            page.contains("<b>T</b>") && page.contains("edit a</p>"),
+            "{page}"
+        );
+        assert!(
+            page.contains("<del>brown</del><ins>red</ins>"),
+            "the card shows how it changed: {page}"
+        );
+        assert!(
+            page.contains(r#"<div class="blk new"><button class="blame""#)
+                && page.contains(">not committed yet</button>"),
+            "{page}"
+        );
+        assert!(
+            page.contains("?diff=HEAD\">Every uncommitted change"),
+            "{page}"
+        );
+        let then = site.get("/ref/main~1/a.md").await.2;
+        assert!(!then.contains("not committed yet"), "{then}");
     }
 
     #[tokio::test]

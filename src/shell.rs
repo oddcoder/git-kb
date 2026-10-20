@@ -15,9 +15,11 @@ use crate::nav::Nav;
 
 mod compare;
 mod history;
+mod margin;
 
 pub use compare::{Comparison, Version};
 pub use history::{PageHistory, PageState};
+pub use margin::Margin;
 
 /// The site's style sheet, in the binary, and where it is in the site.
 pub const STYLE: &str = include_str!("../assets/style.css");
