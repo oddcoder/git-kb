@@ -1,0 +1,230 @@
+//! `git-kb.toml`: how a folder of Markdown is served and built. It sits in the folder or any folder above
+//! it, up to the top of its git repository, and the nearest one is used. Without one, every setting is its
+//! default. Paths in it are relative to the folder it is in.
+//!
+//! ```toml
+//! [serve]
+//! host = "127.0.0.1"     # the address to listen on; only this machine by default
+//! port = 8000
+//!
+//! [build]
+//! out = "target/git-kb"  # where the site is written
+//! ```
+
+use std::net::{IpAddr, Ipv4Addr};
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+use serde::Deserialize;
+use tracing::{debug, trace};
+
+/// The settings for a folder of Markdown.
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Config {
+    pub serve: ServeConfig,
+    pub build: BuildConfig,
+}
+
+/// How the folder is served.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServeConfig {
+    pub host: IpAddr,
+    pub port: u16,
+}
+
+impl Default for ServeConfig {
+    fn default() -> Self {
+        Self {
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port: 8000,
+        }
+    }
+}
+
+/// How the folder is built.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BuildConfig {
+    pub out: PathBuf,
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            out: "target/git-kb".into(),
+        }
+    }
+}
+
+impl Config {
+    /// The file the settings are in.
+    pub const FILE: &str = "git-kb.toml";
+
+    /// The settings for a folder, and the file they are from: the nearest `git-kb.toml` in it or above
+    /// it, up to the top of its repository, the first folder holding `.git`; or every default, and no
+    /// file, if there is none. Paths are taken against the folder the file is in, or the folder itself
+    /// when there is none.
+    ///
+    /// # Errors
+    ///
+    /// When the folder cannot be found, or a file found cannot be read or is not valid settings.
+    pub fn find(folder: &Path) -> anyhow::Result<(Self, Option<PathBuf>)> {
+        // As a full path, so that the search goes on above it: "docs" has no folders above it.
+        let folder =
+            &std::fs::canonicalize(folder).with_context(|| folder.display().to_string())?;
+        for dir in folder.ancestors() {
+            let file = dir.join(Self::FILE);
+            trace!(file = %file.display(), "looking for settings");
+            if file.is_file() {
+                return Ok((Self::load(&file)?, Some(file)));
+            }
+            if dir.join(".git").exists() {
+                trace!(repository = %dir.display(), "no settings up to the top of the repository");
+                break;
+            }
+        }
+        let mut config = Self::default();
+        config.resolve(folder);
+        Ok((config, None))
+    }
+
+    /// The settings in a file, with its paths taken against the folder it is in.
+    ///
+    /// # Errors
+    ///
+    /// When the file cannot be read, or is not valid settings.
+    pub fn load(file: &Path) -> anyhow::Result<Self> {
+        let in_file = || file.display().to_string();
+        let text = std::fs::read_to_string(file).with_context(in_file)?;
+        let mut config: Self = toml::from_str(&text).with_context(in_file)?;
+        config.resolve(file.parent().unwrap_or(Path::new("")));
+        debug!(file = %file.display(), ?config, "read settings");
+        Ok(config)
+    }
+
+    /// Its paths taken against a folder.
+    fn resolve(&mut self, base: &Path) {
+        self.build.out = base.join(&self.build.out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    /// A folder for a test, made in a temporary one, with these files, which is removed after.
+    struct Tree(tempfile::TempDir);
+
+    impl Tree {
+        fn with(files: &[(&str, &str)]) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            for (path, text) in files {
+                let path = dir.path().join(path);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, text).unwrap();
+            }
+            Self(dir)
+        }
+
+        /// A path in it, by its full path, as the search gives them: on macOS, /var is /private/var.
+        fn path(&self, rest: &str) -> PathBuf {
+            fs::canonicalize(self.0.path()).unwrap().join(rest)
+        }
+    }
+
+    #[test]
+    fn without_a_file_every_setting_is_its_default() {
+        let tree = Tree::with(&[(".git/HEAD", ""), ("docs/a.md", "")]);
+        let (config, file) = Config::find(&tree.path("docs")).unwrap();
+        assert_eq!(file, None);
+        assert_eq!(
+            config.serve,
+            ServeConfig {
+                host: [127, 0, 0, 1].into(),
+                port: 8000
+            }
+        );
+        assert_eq!(config.build.out, tree.path("docs/target/git-kb"));
+    }
+
+    #[test]
+    fn settings_are_read_from_the_file() {
+        let tree = Tree::with(&[(
+            "git-kb.toml",
+            "[serve]\nhost = \"0.0.0.0\"\nport = 9000\n[build]\nout = \"site\"\n",
+        )]);
+        let (config, file) = Config::find(&tree.path("")).unwrap();
+        assert_eq!(file, Some(tree.path("git-kb.toml")));
+        assert_eq!(
+            config.serve,
+            ServeConfig {
+                host: [0, 0, 0, 0].into(),
+                port: 9000
+            }
+        );
+        assert_eq!(config.build.out, tree.path("site"));
+    }
+
+    #[test]
+    fn settings_left_out_are_their_defaults() {
+        let tree = Tree::with(&[("git-kb.toml", "[serve]\nport = 9000\n")]);
+        let (config, _) = Config::find(&tree.path("")).unwrap();
+        assert_eq!(
+            config.serve,
+            ServeConfig {
+                host: [127, 0, 0, 1].into(),
+                port: 9000
+            }
+        );
+        assert_eq!(config.build.out, tree.path("target/git-kb"));
+    }
+
+    #[test]
+    fn the_nearest_file_above_the_folder_is_used_and_its_paths_are_its_own() {
+        let tree = Tree::with(&[
+            ("git-kb.toml", "[build]\nout = \"site\"\n"),
+            ("docs/arch/a.md", ""),
+        ]);
+        let (config, file) = Config::find(&tree.path("docs/arch")).unwrap();
+        assert_eq!(file, Some(tree.path("git-kb.toml")));
+        assert_eq!(config.build.out, tree.path("site"));
+    }
+
+    #[test]
+    fn a_folder_that_is_not_there_is_an_error() {
+        let tree = Tree::with(&[]);
+        assert!(Config::find(&tree.path("missing")).is_err());
+    }
+
+    #[test]
+    fn the_search_stops_at_the_top_of_the_repository() {
+        let tree = Tree::with(&[
+            ("git-kb.toml", "[serve]\nport = 9000\n"),
+            ("repo/.git/HEAD", ""),
+            ("repo/docs/a.md", ""),
+        ]);
+        assert_eq!(Config::find(&tree.path("repo/docs")).unwrap().1, None);
+    }
+
+    #[test]
+    fn an_unknown_setting_is_refused_by_name() {
+        let tree = Tree::with(&[("git-kb.toml", "[serve]\nprot = 9000\n")]);
+        let error = format!("{:#}", Config::find(&tree.path("")).unwrap_err());
+        assert!(
+            error.contains("git-kb.toml") && error.contains("prot"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_bad_value_is_refused() {
+        for text in ["[serve]\nport = 70000\n", "[serve]\nhost = \"localhost\"\n"] {
+            let tree = Tree::with(&[("git-kb.toml", text)]);
+            assert!(Config::find(&tree.path("")).is_err(), "{text}");
+        }
+    }
+}

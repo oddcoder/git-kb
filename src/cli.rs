@@ -26,15 +26,13 @@ pub enum Command {
         #[arg(default_value = ".")]
         folder: PathBuf,
     },
-    /// Build a folder of Markdown as a static site, to open from disk or put on any host
+    /// Build a folder of Markdown as a static site, to open from disk or put on any host. It is
+    /// written where git-kb.toml says.
     #[command(display_name = "git-kb")]
     Build {
         /// The folder to build
         #[arg(default_value = ".")]
         folder: PathBuf,
-        /// Where to write the site
-        #[arg(long, default_value = "target/git-kb")]
-        out: PathBuf,
     },
 }
 
@@ -74,14 +72,14 @@ mod tests {
     }
 
     #[test]
-    fn help_and_version_are_asked_for_with_h_and_v() {
+    fn help_and_version_are_asked_for_with_h_and_capital_v() {
         for (args, kind) in [
             (&["-h"][..], clap::error::ErrorKind::DisplayHelp),
             (&["--help"], clap::error::ErrorKind::DisplayHelp),
             (&["serve", "-h"], clap::error::ErrorKind::DisplayHelp),
-            (&["-v"], clap::error::ErrorKind::DisplayVersion),
+            (&["-V"], clap::error::ErrorKind::DisplayVersion),
             (&["--version"], clap::error::ErrorKind::DisplayVersion),
-            (&["serve", "-v"], clap::error::ErrorKind::DisplayVersion),
+            (&["serve", "-V"], clap::error::ErrorKind::DisplayVersion),
         ] {
             assert_eq!(Cli::parse_args(args).unwrap_err().kind(), kind, "{args:?}");
         }
@@ -104,26 +102,30 @@ mod tests {
     }
 
     #[test]
-    fn build_takes_a_folder_and_where_to_write() {
+    fn build_takes_a_folder() {
         assert_eq!(
-            Cli::parse_args(&["build", "docs", "--out", "site"])
-                .unwrap()
-                .command,
+            Cli::parse_args(&["build", "docs"]).unwrap().command,
             Command::Build {
-                folder: "docs".into(),
-                out: "site".into()
+                folder: "docs".into()
             }
         );
     }
 
     #[test]
-    fn build_defaults_to_the_folder_it_runs_in_and_target() {
+    fn build_defaults_to_the_folder_it_runs_in() {
         assert_eq!(
             Cli::parse_args(&["build"]).unwrap().command,
-            Command::Build {
-                folder: ".".into(),
-                out: "target/git-kb".into()
-            }
+            Command::Build { folder: ".".into() }
+        );
+    }
+
+    #[test]
+    fn where_to_write_is_only_set_in_git_kb_toml() {
+        assert_eq!(
+            Cli::parse_args(&["build", "--out", "site"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::UnknownArgument
         );
     }
 }
