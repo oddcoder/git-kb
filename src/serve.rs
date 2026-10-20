@@ -6,7 +6,11 @@
 //! at its built site's, `/arch/overview.html`, so that a built site's links work here too. A folder, `/arch/`,
 //! shows its `index.md`, or else its `README.md`, or else a list of its folders and pages, as a built site's
 //! does. Any other file is served as it is.
+//!
+//! Open pages load again when the site changes: the server tells them, as events from `/_events`, and a line of
+//! script in each page, the shell's, reloads it.
 
+use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -16,12 +20,18 @@ use anyhow::Context;
 use axum::Router;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::routing::get;
 use percent_encoding::percent_decode_str;
 use tokio::net::TcpListener;
-use tracing::{debug, error, info};
+use tokio::sync::broadcast;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+use tracing::{debug, error, info, warn};
 
 use crate::build::{Builder, Folder};
+use crate::live::Live;
 use crate::render::Renderer;
 use crate::shell::{self, Links, Shell};
 
@@ -31,6 +41,8 @@ pub struct Server {
     root: PathBuf,
     renderer: Renderer,
     shell: Shell,
+    /// The site's changes, told to open pages.
+    changes: broadcast::Sender<()>,
 }
 
 impl Server {
@@ -42,6 +54,7 @@ impl Server {
             root,
             renderer: Renderer::new(),
             shell,
+            changes: broadcast::channel(16).0,
         }
     }
 
@@ -60,6 +73,10 @@ impl Server {
             .await
             .with_context(|| address.to_string())?;
         info!(%address, root = %self.root.display(), "serving");
+        // Without watching, pages are served still, but do not load again by themselves.
+        let _live = Live::watch(&self.root, self.changes.clone())
+            .inspect_err(|e| warn!("not watching for changes: {e:#}"))
+            .ok();
         axum::serve(listener, Arc::new(self).router())
             .with_graceful_shutdown(shutdown)
             .await?;
@@ -71,6 +88,10 @@ impl Server {
     /// reads the disk.
     fn router(self: Arc<Self>) -> Router {
         Router::new()
+            .route(
+                "/_events",
+                get(|State(server): State<Arc<Self>>| async move { server.events() }),
+            )
             .fallback(|State(server): State<Arc<Self>>, uri: Uri| async move {
                 let path = uri.path().to_owned();
                 tokio::task::spawn_blocking(move || server.answer(&path))
@@ -78,6 +99,13 @@ impl Server {
                     .unwrap_or_else(|e| Self::broke(&e.into()))
             })
             .with_state(self)
+    }
+
+    /// The site's changes, as events, one each, for as long as the page listens.
+    fn events(&self) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>> + use<>> {
+        let changes = BroadcastStream::new(self.changes.subscribe())
+            .filter_map(|change| change.ok().map(|()| Ok(Event::default().data("changed"))));
+        Sse::new(changes).keep_alive(KeepAlive::default())
     }
 
     /// The answer to a request for a path of the site.
@@ -429,5 +457,32 @@ mod tests {
             (StatusCode::OK, "text/css; charset=utf-8")
         );
         assert_eq!(style, shell::STYLE);
+    }
+
+    #[tokio::test]
+    async fn open_pages_are_told_of_changes() {
+        let site = Site::with(&[("docs/a.md", b"# A")]);
+        let server = Arc::new(Server::new(site.0.path().join("docs")));
+        let response = Arc::clone(&server)
+            .router()
+            .oneshot(Request::get("/_events").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let kind = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(kind, "text/event-stream");
+        server.changes.send(()).unwrap();
+        let mut events = response.into_body().into_data_stream();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(&event[..], b"data: changed\n\n");
     }
 }

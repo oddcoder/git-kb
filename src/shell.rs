@@ -26,6 +26,13 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// What makes a served page load again when the site changes, once a burst of changes, as a save that
+    /// writes twice, has settled. A built site has no server to tell it.
+    const LIVE: &str = concat!(
+        "<script>new EventSource(\"/_events\").onmessage = () => ",
+        "{ clearTimeout(window.kbReload); window.kbReload = setTimeout(() => location.reload(), 100); };</script>\n"
+    );
+
     #[must_use]
     pub fn new(name: String, links: Links) -> Self {
         Self { name, links }
@@ -46,8 +53,12 @@ impl Shell {
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
                 "<title>{window}</title>\n<link rel=\"stylesheet\" href=\"{style}\">\n</head>\n<body>\n",
                 "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a></header>\n",
-                "<main class=\"page\">\n{trail}{body}</main>\n</body>\n</html>\n"
+                "<main class=\"page\">\n{trail}{body}</main>\n{live}</body>\n</html>\n"
             ),
+            live = match self.links {
+                Links::Served => Self::LIVE,
+                Links::Built => "",
+            },
             window = window,
             style = self.to(at, STYLE_PATH),
             top = self.folder(at, Path::new("")),
@@ -191,5 +202,16 @@ mod tests {
             page.contains("<title>&lt;x&gt; · a &amp; b</title>"),
             "{page}"
         );
+    }
+
+    #[test]
+    fn served_pages_load_again_when_the_site_changes_and_built_ones_do_not() {
+        let served = Shell::new("docs".into(), Links::Served).page(Path::new(""), "A", "");
+        assert!(
+            served.contains(r#"new EventSource("/_events")"#),
+            "{served}"
+        );
+        let built = Shell::new("docs".into(), Links::Built).page(Path::new(""), "A", "");
+        assert!(!built.contains("EventSource"), "{built}");
     }
 }

@@ -15,11 +15,13 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
 mime_guess = "2"
+notify = "8"
 percent-encoding = "2"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 serde = { version = "1", features = ["derive"] }
 syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy", "html"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "sync"] }
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi", "std"] }
