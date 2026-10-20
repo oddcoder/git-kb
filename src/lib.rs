@@ -3,6 +3,7 @@
 pub mod build;
 pub mod cli;
 pub mod config;
+pub mod git;
 pub mod live;
 pub mod nav;
 pub mod render;

@@ -38,16 +38,19 @@ impl Nav<'_> {
 }
 
 impl Pages {
-    /// The pages among a site's files, as `Builder::files` gives them, each titled by its first heading, or
-    /// else by its name. A page that cannot be read is titled by its name.
+    /// The pages among a site's files, as `Builder::files` gives them, each read by `read` and titled by its
+    /// first heading, or else by its name. A page that cannot be read is titled by its name.
     #[must_use]
-    pub fn new(root: &Path, files: &[PathBuf], renderer: &Renderer) -> Self {
+    pub fn new(
+        files: &[PathBuf],
+        renderer: &Renderer,
+        read: impl Fn(&Path) -> Option<String>,
+    ) -> Self {
         let titles = files
             .iter()
             .filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")))
             .map(|f| {
-                let title = std::fs::read_to_string(root.join(f))
-                    .ok()
+                let title = read(f)
                     .and_then(|text| renderer.title(&text))
                     .unwrap_or_else(|| {
                         f.file_stem()
@@ -155,7 +158,9 @@ mod tests {
             PathBuf::from("b.md"),
             PathBuf::from("c.png"),
         ];
-        let pages = Pages::new(dir.path(), &files, &Renderer::new());
+        let pages = Pages::new(&files, &Renderer::new(), |f| {
+            std::fs::read_to_string(dir.path().join(f)).ok()
+        });
         assert_eq!(
             pages.entries(Path::new("")).1,
             [(Path::new("b.md"), "b"), (Path::new("a.md"), "The A")]

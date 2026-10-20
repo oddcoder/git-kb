@@ -10,6 +10,7 @@ use pulldown_cmark::HeadingLevel;
 
 use crate::build::Builder;
 use crate::config::LookConfig;
+use crate::git::Revision;
 use crate::nav::Nav;
 
 /// The site's style sheet, in the binary, and where it is in the site.
@@ -26,7 +27,7 @@ pub const ASSETS: [(&str, &str); 2] = [(STYLE_PATH, STYLE), (LOOK_PATH, LOOK)];
 /// How a site's pages link to the rest of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Links {
-    /// Served: from the site's top, `/arch/`, as a server answers for a folder.
+    /// Served: from the site's top, `/docs/arch/`, as a server answers for a folder.
     Served,
     /// Built: relative to the page, `../arch/index.html`, so that the site works from disk and on any host.
     Built,
@@ -42,6 +43,8 @@ pub struct Shell {
     url: Option<String>,
     /// The site's look, before a reader chooses their own.
     look: LookConfig,
+    /// The commit a served site is shown at, when it is not the folder as it is.
+    revision: Option<Revision>,
 }
 
 impl Shell {
@@ -59,13 +62,27 @@ impl Shell {
             links,
             url: None,
             look: LookConfig::default(),
+            revision: None,
         }
+    }
+
+    /// The same, for a site shown at a commit: served, its links are under `/ref/name/`; built, it is in
+    /// `ref/name/`; and its bar names it.
+    #[must_use]
+    pub fn showing(self, revision: Option<Revision>) -> Self {
+        Self { revision, ..self }
     }
 
     /// The same, for a built site that lives at `url`, ending in `/`: each page names its address there.
     #[must_use]
     pub fn living_at(self, url: Option<String>) -> Self {
         Self { url, ..self }
+    }
+
+    /// The site's name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// The same, in a look of its own.
@@ -90,19 +107,21 @@ impl Shell {
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
                 "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n",
                 "<script src=\"{script}\"></script>\n</head>\n<body>\n",
-                "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a></header>\n",
+                "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}</header>\n",
                 "<div class=\"layout\">\n{side}<main class=\"page\">\n{trail}{body}</main>\n</div>\n",
                 "{live}</body>\n</html>\n"
             ),
-            live = match self.links {
-                Links::Served => Self::LIVE,
-                Links::Built => "",
+            // A commit does not change; nor does a page of it.
+            live = match (self.links, &self.revision) {
+                (Links::Served, None) => Self::LIVE,
+                _ => "",
             },
+            revision = self.badge(at),
             look = self.look.attributes(),
             window = window,
             canonical = self.canonical(at, file),
-            style = self.to(at, STYLE_PATH),
-            script = self.to(at, LOOK_PATH),
+            style = self.asset(at, STYLE_PATH),
+            script = self.asset(at, LOOK_PATH),
             top = self.folder(at, Path::new("")),
             name = Self::escape(&self.name),
             side = self.side(at, nav),
@@ -203,9 +222,6 @@ impl Shell {
 
     /// A built page's address where its site lives, for search to know it by, when the site says where.
     fn canonical(&self, at: &Path, file: &str) -> String {
-        let (Links::Built, Some(url)) = (self.links, &self.url) else {
-            return String::new();
-        };
         let folder = Self::encode(at);
         let folder = if folder.is_empty() {
             folder
@@ -217,10 +233,24 @@ impl Shell {
         } else {
             Self::encode(Path::new(file))
         };
-        format!(
-            "<link rel=\"canonical\" href=\"{}\">\n",
-            Self::escape(&format!("{url}{folder}{file}"))
-        )
+        self.address(&format!("{folder}{file}"))
+            .map(|address| {
+                format!(
+                    "<link rel=\"canonical\" href=\"{}\">\n",
+                    Self::escape(&address)
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    /// A built page's address where its site lives, by its path from the site's top, as a link, when the site
+    /// says where it lives.
+    #[must_use]
+    pub fn address(&self, path: &str) -> Option<String> {
+        let (Links::Built, Some(url)) = (self.links, &self.url) else {
+            return None;
+        };
+        Some(format!("{url}{}/{path}", Self::encode(&self.place())))
     }
 
     /// The folders a page is in, each linked, from the top's down to its own; none for a page at the top.
@@ -257,7 +287,7 @@ impl Shell {
             format!("{path}/")
         };
         match self.links {
-            Links::Served => format!("/{path}"),
+            Links::Served => format!("{}/{path}", self.base()),
             Links::Built => format!("{}{path}index.html", Self::up(at)),
         }
     }
@@ -265,9 +295,66 @@ impl Shell {
     /// A link, from a page in the folder `at`, to a file of the site, by its path from the site's top.
     fn to(&self, at: &Path, file: &str) -> String {
         match self.links {
-            Links::Served => format!("/{file}"),
+            Links::Served => format!("{}/{file}", self.base()),
             Links::Built => format!("{}{file}", Self::up(at)),
         }
+    }
+
+    /// Where a served site's pages are: `/docs` for the folder as it is, or `/ref/name` for a commit, its name
+    /// as one part.
+    fn base(&self) -> String {
+        self.revision.as_ref().map_or_else(
+            || "/docs".into(),
+            |r| format!("/ref/{}", Self::encode_part(&r.name)),
+        )
+    }
+
+    /// A link, from a page in the folder `at`, to one of git-kb's own files, by its path: they are beside the
+    /// sites, not among their pages, so that none of the docs' own can be taken for one.
+    fn asset(&self, at: &Path, path: &str) -> String {
+        match self.links {
+            Links::Served => format!("/{path}"),
+            Links::Built => format!("{}{path}", self.out(at)),
+        }
+    }
+
+    /// The commit shown, in the bar, linked to the site as it is: its name, and its id when that is not its name.
+    fn badge(&self, at: &Path) -> String {
+        let Some(revision) = &self.revision else {
+            return String::new();
+        };
+        let id = if revision.short == revision.name {
+            String::new()
+        } else {
+            format!(" · {}", revision.short)
+        };
+        format!(
+            "<a class=\"revision\" href=\"{}\" title=\"The site at commit {}; open it as it is now\">@ {}{id}</a>",
+            self.docs(at),
+            revision.id,
+            Self::escape(&revision.name)
+        )
+    }
+
+    /// Where a site is among the sites of a folder: `docs` for the folder as it is, or `ref/main` for a commit,
+    /// its name's parts as folders.
+    fn place(&self) -> PathBuf {
+        self.revision
+            .as_ref()
+            .map_or_else(|| PathBuf::from("docs"), |r| Path::new("ref").join(&r.name))
+    }
+
+    /// A link, from a page in the folder `at`, to the site as it is.
+    fn docs(&self, at: &Path) -> String {
+        match self.links {
+            Links::Served => "/docs/".into(),
+            Links::Built => format!("{}docs/index.html", self.out(at)),
+        }
+    }
+
+    /// The way up from a folder of a built site to the folder its sites are in.
+    fn out(&self, at: &Path) -> String {
+        "../".repeat(at.components().count() + self.place().components().count())
     }
 
     /// The way up from a folder to the site's top: `../` for each folder it is in, or `./` at the top.
@@ -281,20 +368,21 @@ impl Shell {
     /// A path as a link: each of its parts with what a URL does not hold as itself as %XX.
     fn encode(path: &Path) -> String {
         path.components()
-            .map(|part| {
-                part.as_os_str()
-                    .to_string_lossy()
-                    .bytes()
-                    .map(|b| match b {
-                        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                            char::from(b).to_string()
-                        }
-                        _ => format!("%{b:02X}"),
-                    })
-                    .collect::<String>()
-            })
+            .map(|part| Self::encode_part(&part.as_os_str().to_string_lossy()))
             .collect::<Vec<_>>()
             .join("/")
+    }
+
+    /// Text as one part of a link, a `/` in it too as %XX.
+    fn encode_part(text: &str) -> String {
+        text.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    char::from(b).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
     }
 
     fn escape(text: &str) -> String {
@@ -321,7 +409,9 @@ mod tests {
             let stem = file.file_stem().unwrap().to_string_lossy();
             std::fs::write(path, format!("# {stem}\n")).unwrap();
         }
-        Pages::new(dir.path(), &files, &Renderer::new())
+        Pages::new(&files, &Renderer::new(), |f| {
+            std::fs::read_to_string(dir.path().join(f)).ok()
+        })
     }
 
     #[test]
@@ -360,9 +450,9 @@ mod tests {
             Shell::new("docs".into(), Links::Served).page(Path::new("arch"), "", "", "", &nav);
         assert!(
             served.contains(concat!(
-                r#"<h2>Pages</h2><ul><li><a href="/b.html">b</a></li>"#,
-                r#"<li><details open><summary><a href="/arch/">arch</a></summary>"#,
-                r#"<ul><li><a href="/arch/dma.html" aria-current="page">dma</a></li></ul></details></li></ul>"#
+                r#"<h2>Pages</h2><ul><li><a href="/docs/b.html">b</a></li>"#,
+                r#"<li><details open><summary><a href="/docs/arch/">arch</a></summary>"#,
+                r#"<ul><li><a href="/docs/arch/dma.html" aria-current="page">dma</a></li></ul></details></li></ul>"#
             )),
             "{served}"
         );
@@ -380,7 +470,7 @@ mod tests {
         let folder =
             Shell::new("docs".into(), Links::Served).page(Path::new("arch"), "", "", "", &readme);
         assert!(
-            folder.contains(r#"<a href="/arch/" aria-current="page">arch</a>"#),
+            folder.contains(r#"<a href="/docs/arch/" aria-current="page">arch</a>"#),
             "{folder}"
         );
     }
@@ -397,7 +487,7 @@ mod tests {
         for wanted in [
             "<title>Home · docs</title>",
             r#"<link rel="stylesheet" href="/_assets/style.css">"#,
-            r#"<a class="site" href="/">docs</a>"#,
+            r#"<a class="site" href="/docs/">docs</a>"#,
             "<main class=\"page\">\n<p>Hi</p>\n</main>",
         ] {
             assert!(page.contains(wanted), "{wanted} missing from {page}");
@@ -423,7 +513,7 @@ mod tests {
         );
         for wanted in [
             r#"<html lang="en" data-palette="nord">"#,
-            r#"<script src="../_assets/look.js"></script>"#,
+            r#"<script src="../../_assets/look.js"></script>"#,
         ] {
             assert!(page.contains(wanted), "{wanted} missing from {page}");
         }
@@ -438,14 +528,17 @@ mod tests {
             "",
             &Nav::none(),
         );
-        assert!(page.contains(r#"<a href="/">docs</a><span class="sep">/</span><a href="/arch/">arch</a><span class="sep">/</span><a href="/arch/a%20b/">a b</a>"#), "{page}");
+        assert!(page.contains(r#"<a href="/docs/">docs</a><span class="sep">/</span><a href="/docs/arch/">arch</a><span class="sep">/</span><a href="/docs/arch/a%20b/">a b</a>"#), "{page}");
     }
 
     #[test]
     fn built_links_are_relative_so_the_site_works_from_disk() {
         let shell = Shell::new("docs".into(), Links::Built);
         let page = shell.page(Path::new("arch/deep"), "", "X", "", &Nav::none());
-        assert!(page.contains(r#"href="../../_assets/style.css""#), "{page}");
+        assert!(
+            page.contains(r#"href="../../../_assets/style.css""#),
+            "git-kb's files are beside the site, out of its docs/: {page}"
+        );
         assert!(
             page.contains(r#"<a class="site" href="../../index.html">docs</a>"#),
             "{page}"
@@ -455,7 +548,22 @@ mod tests {
             "{page}"
         );
         let top = shell.page(Path::new(""), "", "Home", "", &Nav::none());
-        assert!(top.contains(r#"href="./_assets/style.css""#), "{top}");
+        assert!(top.contains(r#"href="../_assets/style.css""#), "{top}");
+        let at_a_tag = shell
+            .showing(Some(Revision {
+                name: "v1/rc".into(),
+                id: gix::ObjectId::null(gix::hash::Kind::Sha1),
+                short: "0000000".into(),
+            }))
+            .page(Path::new("arch"), "", "X", "", &Nav::none());
+        assert!(
+            at_a_tag.contains(r#"href="../../../../_assets/style.css""#),
+            "a tag's site is in ref/v1/rc/: {at_a_tag}"
+        );
+        assert!(
+            at_a_tag.contains(r#"<a class="revision" href="../../../../docs/index.html""#),
+            "{at_a_tag}"
+        );
     }
 
     #[test]
@@ -489,17 +597,17 @@ mod tests {
     #[test]
     fn a_built_page_names_its_address_where_its_site_lives() {
         let shell = Shell::new("docs".into(), Links::Built)
-            .living_at(Some("https://foobar.xyz/docs/".into()));
+            .living_at(Some("https://foobar.xyz/kb/".into()));
         let page = shell.page(Path::new("arch"), "a b.html", "A", "", &Nav::none());
         assert!(
             page.contains(
-                r#"<link rel="canonical" href="https://foobar.xyz/docs/arch/a%20b.html">"#
+                r#"<link rel="canonical" href="https://foobar.xyz/kb/docs/arch/a%20b.html">"#
             ),
             "{page}"
         );
         let folder = shell.page(Path::new("arch"), "", "arch", "", &Nav::none());
         assert!(
-            folder.contains(r#"href="https://foobar.xyz/docs/arch/">"#),
+            folder.contains(r#"href="https://foobar.xyz/kb/docs/arch/">"#),
             "{folder}"
         );
         let served =

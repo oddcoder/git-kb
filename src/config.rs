@@ -7,7 +7,7 @@
 //! root = "docs"          # the folder of Markdown; the file's own by default. Before any [table], as
 //!                        # TOML has it.
 //! title = "pentasil"     # the site's name, in its bar and its pages' titles; the root folder's by default
-//! url = "https://foobar.xyz/docs/"  # where the built site lives, for its pages' canonical addresses;
+//! url = "https://foobar.xyz/kb/"  # where the built site's top lives, for its pages' canonical addresses;
 //!                        # none by default
 //!
 //! [serve]
@@ -44,7 +44,7 @@ pub struct Config {
     pub root: PathBuf,
     /// The site's name; the root folder's when none is given.
     pub title: Option<String>,
-    /// Where the built site lives, ending in `/` once read, as `https://foobar.xyz/docs/`.
+    /// Where the built site's top lives, ending in `/` once read, as `https://foobar.xyz/kb/`.
     pub url: Option<String>,
     pub serve: ServeConfig,
     pub build: BuildConfig,

@@ -69,7 +69,7 @@ fn main() -> ExitCode {
                 Builder::new(config.title.clone(), config.url.clone()).looking(config.look.clone());
             match builder.build(&config.root, out) {
                 Ok(built) => {
-                    info!(root = %config.root.display(), pages = built.pages, files = built.files,
+                    info!(root = %config.root.display(), refs = built.refs, pages = built.pages, files = built.files,
                         folders = built.folders, out = %out.display(), "built");
                 }
                 Err(e) => {

@@ -1,6 +1,9 @@
 //! `git kb build`: a folder of Markdown written as a static site, a folder of files to open from disk or put on
-//! any host. Each page is written as HTML beside where its Markdown is, `arch/overview.md` as
-//! `arch/overview.html`, with its links to other pages made links to theirs, and every other file, such as an
+//! any host. The site is in its `docs/`, as the folder is, and, when the folder is in a git repository, in
+//! `ref/main/`, `ref/v1.0/` and so on, as it is at each branch and tag; git-kb's own files, the pages' style
+//! sheet and scripts, are beside them, in `_assets/`, and the top's `index.html` sends to `docs/`.
+//!
+//! Each page is written as HTML beside where its Markdown is, `arch/overview.md` as `arch/overview.html`, with its links to other pages made links to theirs, and every other file, such as an
 //! image, is copied as it is. Every folder with pages in it, or below it, gets an `index.html`: its
 //! `index.md`; or else a page that redirects to its `README.md`'s, as a forge shows a folder by its README;
 //! or else a list of its pages and folders. Links to such a folder go to its README's page itself.
@@ -18,13 +21,16 @@ use ignore::WalkBuilder;
 use tracing::debug;
 
 use crate::config::LookConfig;
+use crate::git::Repo;
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
 use crate::shell::{self, Links, Shell};
 
 /// What a build wrote.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Built {
+    /// The branches and tags built, besides the folder as it is.
+    pub refs: usize,
     /// The pages rendered.
     pub pages: usize,
     /// The other files copied.
@@ -77,8 +83,9 @@ impl Builder {
         Self { look, ..self }
     }
 
-    /// Writes a folder of Markdown as a site, into `out`, in place of whatever an earlier build wrote there.
-    /// An output folder inside the folder built is not built itself.
+    /// Writes a folder of Markdown as a site, into `out`, in place of whatever an earlier build wrote there: the
+    /// folder as it is, and as it is at each branch and tag of its repository. An output folder inside the folder
+    /// built is not built itself.
     ///
     /// # Errors
     ///
@@ -87,24 +94,69 @@ impl Builder {
         let folder = fs::canonicalize(folder).with_context(|| folder.display().to_string())?;
         Self::prepare(out, &folder)?;
         let out = fs::canonicalize(out).with_context(|| out.display().to_string())?;
-        let mut built = Built {
-            pages: 0,
-            files: 0,
-            folders: 0,
-        };
-        let mut folders: BTreeMap<PathBuf, Folder> = BTreeMap::new();
-
-        // Every file first, so that each page knows, as it is rendered, which folders are shown by their
-        // README: those with one and without an index.md, each with its README's page.
-        let files = Self::files(&folder, Some(&out))?;
         let shell = Shell::new(self.title(&folder), Links::Built)
             .living_at(self.url.clone())
             .looking(self.look.clone());
-        let readmes = Self::readmes(&files);
-        let pages = Pages::new(&folder, &files, &self.renderer);
 
-        for path in &files {
-            let from = folder.join(path);
+        let files = Self::files(&folder, Some(&out))?;
+        let mut built = self.site(&shell, &files, &out.join("docs"), |f| {
+            let from = folder.join(f);
+            fs::read(&from).with_context(|| from.display().to_string())
+        })?;
+        if let Some(repo) = Repo::discover(&folder) {
+            for snapshot in repo.refs()? {
+                let shell = shell.clone().showing(Some(snapshot.revision.clone()));
+                let to = out.join("ref").join(&snapshot.revision.name);
+                let of = self.site(&shell, &snapshot.files(), &to, |f| repo.read(&snapshot, f))?;
+                debug!(
+                    name = snapshot.revision.name,
+                    pages = of.pages,
+                    "built a ref"
+                );
+                built.refs += 1;
+            }
+        }
+
+        for (path, text) in shell::ASSETS {
+            let to = out.join(path);
+            fs::create_dir_all(to.parent().unwrap_or(&out))?;
+            fs::write(&to, text).with_context(|| to.display().to_string())?;
+        }
+        let index = out.join("index.html");
+        let docs = shell
+            .address("")
+            .unwrap_or_else(|| "docs/index.html".into());
+        fs::write(
+            &index,
+            Self::redirect(shell.name(), "docs/index.html", Some(&docs)),
+        )
+        .with_context(|| index.display().to_string())?;
+        fs::write(
+            out.join(Self::MARK),
+            "Written by git kb build, which replaces everything here when it builds again.\n",
+        )?;
+        Ok(built)
+    }
+
+    /// Writes one site, of the files given, each read by `read`, into `to`.
+    fn site(
+        &self,
+        shell: &Shell,
+        files: &[PathBuf],
+        to: &Path,
+        read: impl Fn(&Path) -> anyhow::Result<Vec<u8>>,
+    ) -> anyhow::Result<Built> {
+        let mut built = Built::default();
+        let mut folders: BTreeMap<PathBuf, Folder> = BTreeMap::new();
+        // Every file first, so that each page knows, as it is rendered, which folders are shown by their
+        // README: those with one and without an index.md, each with its README's page.
+        let readmes = Self::readmes(files);
+        let pages = Pages::new(files, &self.renderer, |f| {
+            read(f)
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        });
+        for path in files {
             let markdown = path
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("md"));
@@ -113,37 +165,29 @@ impl Builder {
             } else {
                 path.clone()
             };
-            let to = out.join(&written);
-            if let Some(dir) = to.parent() {
+            let into = to.join(&written);
+            if let Some(dir) = into.parent() {
                 fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
             }
+            let bytes = read(path)?;
             if markdown {
-                let text = fs::read_to_string(&from).with_context(|| from.display().to_string())?;
-                let (html, title) = self.page(&shell, &pages, &text, path, &readmes);
-                fs::write(&to, html).with_context(|| to.display().to_string())?;
+                let text = String::from_utf8_lossy(&bytes);
+                let (html, title) = self.page(shell, &pages, &text, path, &readmes);
+                fs::write(&into, html).with_context(|| into.display().to_string())?;
                 debug!(page = %path.display(), "rendered");
                 built.pages += 1;
                 Self::file_under(&mut folders, &written, title);
             } else {
-                fs::copy(&from, &to).with_context(|| to.display().to_string())?;
+                fs::write(&into, bytes).with_context(|| into.display().to_string())?;
                 debug!(file = %path.display(), "copied");
                 built.files += 1;
             }
         }
         for (path, folder) in &folders {
-            if self.index(&shell, &pages, &out, path, folder)? {
+            if Self::index(shell, &pages, to, path, folder)? {
                 built.folders += 1;
             }
         }
-        for (path, text) in shell::ASSETS {
-            let to = out.join(path);
-            fs::create_dir_all(to.parent().unwrap_or(&out))?;
-            fs::write(&to, text).with_context(|| to.display().to_string())?;
-        }
-        fs::write(
-            out.join(Self::MARK),
-            "Written by git kb build, which replaces everything here when it builds again.\n",
-        )?;
         Ok(built)
     }
 
@@ -257,7 +301,6 @@ impl Builder {
     /// A folder's `index.html`, unless its `index.md` is it already: a page that redirects to its README's,
     /// or else a list of its folders and its pages, by title. Answers whether it wrote one.
     fn index(
-        &self,
         shell: &Shell,
         pages: &Pages,
         out: &Path,
@@ -271,13 +314,14 @@ impl Builder {
         let dir = out.join(path);
         let index = dir.join("index.html");
         if let Some(readme) = named("README.html") {
-            let canonical = self
-                .url
-                .as_ref()
-                .map(|url| format!("{url}{}", Self::page_path(path, readme)));
+            let canonical = shell.address(&Self::page_path(path, readme));
             fs::write(
                 &index,
-                Self::redirect(&folder.pages[readme], readme, canonical.as_deref()),
+                Self::redirect(
+                    &folder.pages[readme],
+                    &Self::href(readme),
+                    canonical.as_deref(),
+                ),
             )
             .with_context(|| index.display().to_string())?;
             debug!(folder = %path.display(), "redirected to its README");
@@ -451,10 +495,10 @@ impl Builder {
             .is_some_and(|n| n.eq_ignore_ascii_case(name))
     }
 
-    /// A page that sends whoever opens it to another in its folder: by the HTML itself, as a site on disk or
+    /// A page that sends whoever opens it to another, by a link to it: by the HTML itself, as a site on disk or
     /// on a host such as GitHub Pages cannot redirect, and naming that page for search.
     fn redirect(title: &str, to: &str, canonical: Option<&str>) -> String {
-        let to = Self::escape(&Self::href(to));
+        let to = Self::escape(to);
         let canonical = canonical.map_or_else(|| to.clone(), Self::escape);
         format!(
             concat!(
@@ -541,21 +585,17 @@ mod tests {
         assert_eq!(
             built,
             Built {
+                refs: 0,
                 pages: 2,
                 files: 0,
                 folders: 1
             }
         );
         assert_eq!(
-            tree.files("site"),
-            [
-                ".git-kb-site",
-                "arch/index.html",
-                "arch/overview.html",
-                "index.html"
-            ]
+            tree.files("site/docs"),
+            ["arch/index.html", "arch/overview.html", "index.html"]
         );
-        let home = tree.read("site/index.html");
+        let home = tree.read("site/docs/index.html");
         assert!(home.starts_with("<!doctype html>"), "{home}");
         assert!(home.contains("<title>Home · docs</title>"), "{home}");
         assert!(home.contains(r#"<h1 id="home">Home</h1>"#), "{home}");
@@ -606,10 +646,10 @@ mod tests {
         Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        let home = tree.read("site/index.html");
+        let home = tree.read("site/docs/index.html");
         assert!(home.contains(r#"href="arch/overview.html#data""#), "{home}");
         assert!(home.contains(r#"src="img/chip.png""#), "{home}");
-        let overview = tree.read("site/arch/overview.html");
+        let overview = tree.read("site/docs/arch/overview.html");
         for link in [
             r#"<a href="../index.html">home</a>"#,
             r#"<a href="../index.html">from the top</a>"#,
@@ -625,7 +665,7 @@ mod tests {
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert!(
-            tree.read("site/notes.html")
+            tree.read("site/docs/notes.html")
                 .contains("<title>notes · docs</title>")
         );
     }
@@ -637,7 +677,7 @@ mod tests {
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert!(
-            tree.read("site/a.html")
+            tree.read("site/docs/a.html")
                 .contains("<title>A &lt; B &amp; &quot;c&quot; · docs</title>")
         );
     }
@@ -652,12 +692,16 @@ mod tests {
         assert_eq!(
             built,
             Built {
+                refs: 0,
                 pages: 1,
                 files: 1,
                 folders: 1
             }
         );
-        assert_eq!(fs::read(tree.path("site/img/chip.png")).unwrap(), image);
+        assert_eq!(
+            fs::read(tree.path("site/docs/img/chip.png")).unwrap(),
+            image
+        );
     }
 
     #[test]
@@ -672,8 +716,8 @@ mod tests {
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
-            tree.files("site"),
-            [".git-kb-site", ".gitignore", "a.html", "index.html"]
+            tree.files("site/docs"),
+            [".gitignore", "a.html", "index.html"]
         );
     }
 
@@ -691,9 +735,8 @@ mod tests {
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
-            tree.files("site"),
+            tree.files("site/docs"),
             [
-                ".git-kb-site",
                 ".kbignore",
                 "a.html",
                 "arch/.kbignore",
@@ -715,8 +758,8 @@ mod tests {
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(
-            tree.files("site"),
-            [".git-kb-site", ".notes.html", "a.html", "index.html"]
+            tree.files("site/docs"),
+            [".notes.html", "a.html", "index.html"]
         );
     }
 
@@ -733,15 +776,13 @@ mod tests {
         assert_eq!(
             built,
             Built {
+                refs: 0,
                 pages: 1,
                 files: 0,
                 folders: 1
             }
         );
-        assert_eq!(
-            tree.files("docs/site"),
-            [".git-kb-site", "a.html", "index.html"]
-        );
+        assert_eq!(tree.files("docs/site/docs"), ["a.html", "index.html"]);
     }
 
     #[test]
@@ -754,7 +795,15 @@ mod tests {
         Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        assert_eq!(tree.files("site"), [".git-kb-site", "a.html", "index.html"]);
+        assert_eq!(
+            tree.files("site"),
+            [
+                ".git-kb-site",
+                "docs/a.html",
+                "docs/index.html",
+                "index.html"
+            ]
+        );
     }
 
     #[test]
@@ -788,7 +837,7 @@ mod tests {
             .unwrap();
         assert_eq!(built.folders, 0);
         assert!(
-            tree.read("site/index.html")
+            tree.read("site/docs/index.html")
                 .contains("<title>Home · docs</title>")
         );
     }
@@ -808,16 +857,17 @@ mod tests {
         assert_eq!(
             built,
             Built {
+                refs: 0,
                 pages: 2,
                 files: 0,
                 folders: 2
             }
         );
         assert!(
-            tree.read("site/arch/README.html")
+            tree.read("site/docs/arch/README.html")
                 .contains("<h1 id=\"architecture\">Architecture</h1>")
         );
-        let index = tree.read("site/arch/index.html");
+        let index = tree.read("site/docs/arch/index.html");
         for wanted in [
             "<title>Architecture</title>",
             r#"<link rel="canonical" href="README.html">"#,
@@ -826,12 +876,12 @@ mod tests {
         ] {
             assert!(index.contains(wanted), "{wanted} missing from {index}");
         }
-        let dma = tree.read("site/arch/dma.html");
+        let dma = tree.read("site/docs/arch/dma.html");
         assert!(dma.contains(r#"href="README.html""#), "{dma}");
         assert!(dma.contains(r#"href="./README.html""#), "{dma}");
         assert!(dma.contains(r#"href="../arch/README.html""#), "{dma}");
         assert!(
-            tree.read("site/index.html")
+            tree.read("site/docs/index.html")
                 .contains(r#"href="arch/index.html""#)
         );
     }
@@ -846,11 +896,11 @@ mod tests {
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert!(
-            tree.read("site/README.html")
+            tree.read("site/docs/README.html")
                 .contains("<h1 id=\"readme\">Readme</h1>")
         );
         assert!(
-            tree.read("site/index.html")
+            tree.read("site/docs/index.html")
                 .contains(r#"href="README.html""#)
         );
     }
@@ -883,8 +933,8 @@ mod tests {
         Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        assert!(!tree.path("site/img/index.html").exists());
-        assert!(!tree.read("site/index.html").contains("img/"));
+        assert!(!tree.path("site/docs/img/index.html").exists());
+        assert!(!tree.read("site/docs/index.html").contains("img/"));
     }
 
     #[test]
@@ -896,8 +946,8 @@ mod tests {
         assert_eq!(tree.read("site/_assets/style.css"), shell::STYLE);
         assert_eq!(tree.read("site/_assets/look.js"), shell::LOOK);
         assert!(
-            tree.read("site/arch/a.html")
-                .contains(r#"href="../_assets/style.css""#)
+            tree.read("site/docs/arch/a.html")
+                .contains(r#"href="../../_assets/style.css""#)
         );
     }
 
@@ -910,17 +960,49 @@ mod tests {
         Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        let dma = tree.read("site/arch/dma.html");
+        let dma = tree.read("site/docs/arch/dma.html");
         assert!(
             dma.contains(r#"<a href="../arch/dma.html" aria-current="page">DMA</a>"#),
             "{dma}"
         );
         assert!(dma.contains(r##"<a href="#queues">Queues</a>"##), "{dma}");
-        let home = tree.read("site/index.html");
+        let home = tree.read("site/docs/index.html");
         assert!(
             home.contains(r#"<a href="./arch/index.html">arch</a>"#),
             "{home}"
         );
+    }
+
+    #[test]
+    fn each_branch_and_tag_is_built_beside_the_folder_as_it_is() {
+        let git = crate::git::tests::Git::new();
+        git.write("docs/a.md", "# A, first");
+        git.commit("first");
+        git.run(&["tag", "v1"]);
+        git.run(&["branch", "topic/x"]);
+        git.write("docs/a.md", "# A, second");
+        git.commit("second");
+        git.write("docs/a.md", "# A, not committed");
+        let site = git.top().join("site");
+        let built = Builder::default()
+            .build(&git.top().join("docs"), &site)
+            .unwrap();
+        assert_eq!(built.refs, 3);
+        let read = |path: &str| fs::read_to_string(site.join(path)).unwrap();
+        assert!(read("docs/a.html").contains("<title>A, not committed"));
+        assert!(read("ref/main/a.html").contains("<title>A, second"));
+        assert!(read("ref/v1/a.html").contains("<title>A, first"));
+        let topic = read("ref/topic/x/a.html");
+        assert!(topic.contains("<title>A, first"), "{topic}");
+        assert!(
+            topic.contains(r#"href="../../../_assets/style.css""#),
+            "{topic}"
+        );
+        assert!(
+            topic.contains(r#"<a class="revision" href="../../../docs/index.html""#),
+            "{topic}"
+        );
+        assert!(read("index.html").contains("url=docs/index.html"));
     }
 
     #[test]
@@ -929,7 +1011,7 @@ mod tests {
         Builder::new(Some("pentasil".into()), None)
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        let page = tree.read("site/a.html");
+        let page = tree.read("site/docs/a.html");
         assert!(page.contains("<title>A · pentasil</title>"), "{page}");
         assert!(
             page.contains(r#"<a class="site" href="./index.html">pentasil</a>"#),
@@ -943,18 +1025,20 @@ mod tests {
             ("docs/arch/README.md", b"# Architecture"),
             ("docs/arch/dma.md", b"# DMA"),
         ]);
-        Builder::new(None, Some("https://foobar.xyz/docs/".into()))
+        Builder::new(None, Some("https://foobar.xyz/kb/".into()))
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
-        let dma = tree.read("site/arch/dma.html");
+        let dma = tree.read("site/docs/arch/dma.html");
         assert!(
-            dma.contains(r#"<link rel="canonical" href="https://foobar.xyz/docs/arch/dma.html">"#),
+            dma.contains(
+                r#"<link rel="canonical" href="https://foobar.xyz/kb/docs/arch/dma.html">"#
+            ),
             "{dma}"
         );
-        let stub = tree.read("site/arch/index.html");
+        let stub = tree.read("site/docs/arch/index.html");
         assert!(
             stub.contains(
-                r#"<link rel="canonical" href="https://foobar.xyz/docs/arch/README.html">"#
+                r#"<link rel="canonical" href="https://foobar.xyz/kb/docs/arch/README.html">"#
             ),
             "{stub}"
         );

@@ -39,12 +39,14 @@ Either way, `cargo install` puts `git-kb` in `~/.cargo/bin`, which should be on 
 Run it in the repository, or in any folder of Markdown:
 
 ```sh
-git kb serve           # serves the site at http://127.0.0.1:8000/
-git kb build           # writes the site into target/git-kb/
+git kb serve           # serves the site at http://127.0.0.1:8000/docs/
+git kb build           # writes the site into target/git-kb/docs/, and each branch and tag into target/git-kb/ref/
 git kb serve docs      # the same, starting from the folder docs
 ```
 
 Each command takes a folder, `.` by default. git-kb looks for a `git-kb.toml` file in that folder and in each folder above it, up to the top of the repository. Without one, it shows the folder itself with every setting at its default. `git kb -h` lists the commands. `git kb --help` doesn't work, because git turns it into a request for a manual page.
+
+In a git repository, `git kb serve` also shows the site at any commit, under `/ref/`: `/ref/main/`, `/ref/v1.0/arch/` or `/ref/3f2a1c9/`. The part after `/ref/` is anything `git rev-parse` takes, with a `/` in a branch name written as `%2F`.
 
 What `.gitignore` files ignore is never shown or built. To leave out more, such as drafts, list it in a `.kbignore` file, which works like `.gitignore`.
 
@@ -55,7 +57,7 @@ Every setting in `git-kb.toml` is optional. Paths are relative to the file:
 ```toml
 root = "docs"                     # the folder of Markdown; the file's own folder by default
 title = "pentasil"                # the site's name, in its bar and its pages' titles; the root folder's by default
-url = "https://foobar.xyz/docs/"  # where the built site lives, for its pages' canonical addresses
+url = "https://foobar.xyz/kb/"    # where the built site's top lives, for its pages' canonical addresses
 
 [serve]
 host = "127.0.0.1"                # the address to listen on; only this machine by default

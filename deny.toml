@@ -6,6 +6,10 @@ targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-app
 allow = ["Apache-2.0", "BSD-3-Clause", "ISC", "MIT"]
 exceptions = [
     { crate = "unicode-ident", allow = ["Unicode-3.0"] },
+    { crate = "unicode-normalization", allow = ["Unicode-3.0"] },
+    # zlib's own license, as permissive as MIT; gix's.
+    { crate = "foldhash", allow = ["Zlib"] },
+    { crate = "zlib-rs", allow = ["Zlib"] },
     # Public domain.
     { crate = "notify", allow = ["CC0-1.0"] },
 ]
