@@ -50,12 +50,13 @@ fn main() -> ExitCode {
                 .map_err(anyhow::Error::from)
                 .and_then(|runtime| {
                     // Until Ctrl-C, after which the requests begun are answered, and no more.
-                    runtime.block_on(Server::new(config.root.clone(), config.title.clone()).run(
-                        address,
-                        async {
-                            tokio::signal::ctrl_c().await.unwrap_or(());
-                        },
-                    ))
+                    runtime.block_on(
+                        Server::new(config.root.clone(), config.title.clone())
+                            .looking(config.look.clone())
+                            .run(address, async {
+                                tokio::signal::ctrl_c().await.unwrap_or(());
+                            }),
+                    )
                 });
             if let Err(e) = served {
                 error!("{e:#}");
@@ -64,7 +65,9 @@ fn main() -> ExitCode {
         }
         Command::Build { .. } => {
             let out = &config.build.out;
-            match Builder::new(config.title.clone(), config.url.clone()).build(&config.root, out) {
+            let builder =
+                Builder::new(config.title.clone(), config.url.clone()).looking(config.look.clone());
+            match builder.build(&config.root, out) {
                 Ok(built) => {
                     info!(root = %config.root.display(), pages = built.pages, files = built.files,
                         folders = built.folders, out = %out.display(), "built");

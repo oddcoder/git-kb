@@ -1,39 +1,111 @@
 /* git-kb's pages: a slim bar with the site's name, a trail of folders, and the page in a column narrow enough to
-   read. Light or dark as the system is, by color-scheme and light-dark(). Every color is a variable, for themes
-   to set. */
+   read. Every color is a variable, set by the page's theme, data-palette, in light and dark by light-dark();
+   which of the two is by data-scheme, or by the system's. The text's size and fonts are data-size, data-font
+   and data-code. See src/look.rs. */
 
 :root {
   color-scheme: light dark;
-  --page: light-dark(#ffffff, #0d1117);
-  --text: light-dark(#1f2328, #e6edf3);
-  --muted: light-dark(#59636e, #9198a1);
-  --line: light-dark(#d1d9e0, #3d444d);
-  --subtle: light-dark(#f6f8fa, #151b23);
-  --accent: light-dark(#0969da, #4493f8);
-  --mark: light-dark(#fff8c5, rgba(187, 128, 9, 0.15));
-  /* Code, by the kind of each token. */
-  --code-comment: light-dark(#59636e, #9198a1);
-  --code-keyword: light-dark(#cf222e, #ff7b72);
-  --code-string: light-dark(#0a3069, #a5d6ff);
-  --code-constant: light-dark(#0550ae, #79c0ff);
-  --code-entity: light-dark(#6639ba, #d2a8ff);
-  --code-tag: light-dark(#116329, #7ee787);
-  --code-variable: light-dark(#953800, #ffa657);
-
   --text-width: 46em;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --text-size: 16px;
+  --text-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  --code-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --mark: light-dark(#fff8c5, rgba(187, 128, 9, 0.15));
 }
+[data-scheme="light"] { color-scheme: light; }
+[data-scheme="dark"] { color-scheme: dark; }
+
+/* The themes. Code's colors are by the kind of each token. */
+:root, [data-palette="github"] {
+  --page: light-dark(#ffffff, #0d1117); --subtle: light-dark(#f6f8fa, #151b23); --text: light-dark(#1f2328, #e6edf3);
+  --muted: light-dark(#59636e, #9198a1); --line: light-dark(#d1d9e0, #3d444d); --accent: light-dark(#0969da, #4493f8);
+  --code-comment: light-dark(#59636e, #9198a1); --code-keyword: light-dark(#cf222e, #ff7b72);
+  --code-string: light-dark(#0a3069, #a5d6ff); --code-constant: light-dark(#0550ae, #79c0ff);
+  --code-entity: light-dark(#6639ba, #d2a8ff); --code-tag: light-dark(#116329, #7ee787);
+  --code-variable: light-dark(#953800, #ffa657);
+}
+[data-palette="paper"] {
+  --page: light-dark(#f2f0eb, #151411); --subtle: light-dark(#e9e6df, #1e1c17); --text: light-dark(#2b2a26, #e6e3da);
+  --muted: light-dark(#6b6962, #9e9c94); --line: light-dark(#d9d5cc, #33302a); --accent: light-dark(#3f6e96, #70a0cb);
+  --code-comment: light-dark(#85837c, #7f7d76); --code-keyword: light-dark(#3f6e96, #70a0cb);
+  --code-string: light-dark(#4c7a5c, #74a383); --code-constant: light-dark(#98663a, #b78357);
+  --code-entity: light-dark(#6e5e90, #a392c8); --code-tag: light-dark(#4c7a5c, #74a383);
+  --code-variable: light-dark(#98663a, #b78357);
+}
+[data-palette="solarized"] {
+  --page: light-dark(#fdf6e3, #002b36); --subtle: light-dark(#eee8d5, #073642); --text: light-dark(#4f6168, #a3b1b3);
+  --muted: light-dark(#7d8f91, #6f8287); --line: light-dark(#e4ddc8, #0e4553); --accent: light-dark(#268bd2, #4aa3e0);
+  --code-comment: light-dark(#93a1a1, #586e75); --code-keyword: light-dark(#268bd2, #4aa3e0);
+  --code-string: light-dark(#859900, #9db31a); --code-constant: light-dark(#cb4b16, #e0663a);
+  --code-entity: light-dark(#6c71c4, #8a8fd8); --code-tag: light-dark(#859900, #9db31a);
+  --code-variable: light-dark(#cb4b16, #e0663a);
+}
+[data-palette="nord"] {
+  --page: light-dark(#eceff4, #2e3440); --subtle: light-dark(#e5e9f0, #3b4252); --text: light-dark(#2e3440, #e5e9f0);
+  --muted: light-dark(#5b657a, #a3abb9); --line: light-dark(#d8dee9, #434c5e); --accent: light-dark(#5e81ac, #88c0d0);
+  --code-comment: light-dark(#6b7385, #7b8394); --code-keyword: light-dark(#5e81ac, #81a1c1);
+  --code-string: light-dark(#5a7d45, #a3be8c); --code-constant: light-dark(#b4633f, #d08770);
+  --code-entity: light-dark(#8f6a8a, #b48ead); --code-tag: light-dark(#5a7d45, #a3be8c);
+  --code-variable: light-dark(#b4633f, #d08770);
+}
+[data-palette="gruvbox"] {
+  --page: light-dark(#fbf1c7, #282828); --subtle: light-dark(#f2e5bc, #32302f); --text: light-dark(#3c3836, #ebdbb2);
+  --muted: light-dark(#7c6f64, #a89984); --line: light-dark(#e0d4a8, #504945); --accent: light-dark(#076678, #83a598);
+  --code-comment: light-dark(#928374, #928374); --code-keyword: light-dark(#076678, #83a598);
+  --code-string: light-dark(#79740e, #b8bb26); --code-constant: light-dark(#af3a03, #fe8019);
+  --code-entity: light-dark(#8f3f71, #d3869b); --code-tag: light-dark(#79740e, #b8bb26);
+  --code-variable: light-dark(#af3a03, #fe8019);
+}
+
+/* The text's size and fonts. */
+[data-size="14"] { --text-size: 14px; }
+[data-size="15"] { --text-size: 15px; }
+[data-size="18"] { --text-size: 18px; }
+[data-size="20"] { --text-size: 20px; }
+[data-font="serif"] { --text-font: Charter, "Bitstream Charter", "Iowan Old Style", "Source Serif Pro", "Sitka Text", Cambria, Georgia, serif; }
+[data-font="mono"] { --text-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+[data-code="menlo"] { --code-font: Menlo, "DejaVu Sans Mono", "Bitstream Vera Sans Mono", Consolas, monospace; }
+[data-code="courier"] { --code-font: "Courier Prime", "Courier New", Courier, monospace; }
 
 * { box-sizing: border-box; }
 html { background: var(--page); color: var(--text); }
-body { margin: 0; font: 16px/1.6 var(--sans); }
+body { margin: 0; font: var(--text-size)/1.6 var(--text-font); }
 
-/* The bar: the site's name, linked to its top. */
+/* The bar: the site's name, linked to its top, and the Aa menu. */
 .bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 12px; height: 48px;
        padding: 0 24px; border-bottom: 1px solid var(--line);
        background: color-mix(in srgb, var(--page) 92%, transparent); backdrop-filter: blur(8px); }
 .bar .site { color: var(--text); font-weight: 600; text-decoration: none; }
+
+/* The Aa menu, in sizes of its own, so that it stays as it is whatever text size is chosen. */
+.look-open { height: 30px; margin-left: auto; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px;
+             background: var(--subtle); color: var(--text); font: 600 14px/1 Georgia, serif; cursor: pointer; }
+.look-open:hover { border-color: var(--accent); }
+.look { position: fixed; inset: 56px 16px auto auto; width: 300px; max-height: calc(100vh - 72px); overflow: auto;
+        margin: 0; padding: 12px 14px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--page);
+        color: var(--text); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        box-shadow: 0 8px 24px light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.5)); }
+.look h3 { margin: 10px 0 6px; padding: 0; border: 0; color: var(--muted); font-size: 11px; font-weight: 600;
+           text-transform: uppercase; letter-spacing: 0.04em; }
+.look h3:first-child { margin-top: 0; }
+.choices { display: flex; flex-wrap: wrap; gap: 4px; }
+.choices button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 8px;
+                  border: 1px solid var(--line); border-radius: 6px; background: var(--page); color: var(--text);
+                  font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.choices button:hover { border-color: var(--accent); }
+.choices button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+[data-look="palette"] { flex-direction: column; }
+[data-look="palette"] button { justify-content: flex-start; }
+[data-look="font"] [data-value="serif"] { font-family: Charter, Georgia, serif; }
+[data-look="font"] [data-value="mono"], [data-look="code"] [data-value="system"] { font-family: ui-monospace, monospace; }
+[data-look="code"] [data-value="menlo"] { font-family: Menlo, monospace; }
+[data-look="code"] [data-value="courier"] { font-family: "Courier New", Courier, monospace; }
+/* A theme's swatch is in the theme itself: its page in light, then in dark, and a dot of its accent. */
+.swatch { position: relative; display: flex; width: 26px; height: 16px; overflow: hidden; border: 1px solid var(--line);
+          border-radius: 4px; }
+.swatch i { flex: 1; background: var(--page); color-scheme: light; }
+.swatch i + i { color-scheme: dark; }
+.swatch::after { content: ""; position: absolute; top: 4px; right: 3px; width: 6px; height: 6px; border-radius: 50%;
+                 background: var(--accent); }
 
 /* The page, and the trail of the folders it is in. */
 .page { max-width: var(--text-width); margin: 0 auto; padding: 24px 24px 96px; }
@@ -66,7 +138,7 @@ th, td { padding: 6px 13px; border: 1px solid var(--line); }
 th { font-weight: 600; }
 tr:nth-child(2n) { background: var(--subtle); }
 
-code, pre { font-family: var(--mono); font-size: 85%; }
+code, pre { font-family: var(--code-font); font-size: 85%; }
 code { padding: 0.2em 0.4em; border-radius: 6px; background: var(--subtle); }
 pre { padding: 16px; overflow: auto; line-height: 1.45; border-radius: 6px; background: var(--subtle); }
 pre code { padding: 0; font-size: 100%; background: none; }

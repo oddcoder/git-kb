@@ -17,6 +17,7 @@ use anyhow::{Context, bail};
 use ignore::WalkBuilder;
 use tracing::debug;
 
+use crate::config::LookConfig;
 use crate::render::Renderer;
 use crate::shell::{self, Links, Shell};
 
@@ -47,6 +48,7 @@ pub struct Builder {
     title: Option<String>,
     /// Where the site lives, ending in `/`, for its pages' canonical addresses.
     url: Option<String>,
+    look: LookConfig,
 }
 
 impl Builder {
@@ -64,7 +66,14 @@ impl Builder {
             renderer: Renderer::new(),
             title,
             url,
+            look: LookConfig::default(),
         }
+    }
+
+    /// The same, building sites in a look of their own.
+    #[must_use]
+    pub fn looking(self, look: LookConfig) -> Self {
+        Self { look, ..self }
     }
 
     /// Writes a folder of Markdown as a site, into `out`, in place of whatever an earlier build wrote there.
@@ -87,7 +96,9 @@ impl Builder {
         // Every file first, so that each page knows, as it is rendered, which folders are shown by their
         // README: those with one and without an index.md, each with its README's page.
         let files = Self::files(&folder, Some(&out))?;
-        let shell = Shell::new(self.title(&folder), Links::Built).living_at(self.url.clone());
+        let shell = Shell::new(self.title(&folder), Links::Built)
+            .living_at(self.url.clone())
+            .looking(self.look.clone());
         let readmes = Self::readmes(&files);
 
         for path in &files {
@@ -122,9 +133,11 @@ impl Builder {
                 built.folders += 1;
             }
         }
-        let style = out.join(shell::STYLE_PATH);
-        fs::create_dir_all(style.parent().unwrap_or(&out))?;
-        fs::write(&style, shell::STYLE).with_context(|| style.display().to_string())?;
+        for (path, text) in shell::ASSETS {
+            let to = out.join(path);
+            fs::create_dir_all(to.parent().unwrap_or(&out))?;
+            fs::write(&to, text).with_context(|| to.display().to_string())?;
+        }
         fs::write(
             out.join(Self::MARK),
             "Written by git kb build, which replaces everything here when it builds again.\n",
@@ -861,12 +874,13 @@ mod tests {
     }
 
     #[test]
-    fn a_built_site_has_its_style_sheet() {
+    fn a_built_site_has_its_style_sheet_and_script() {
         let tree = Tree::with(&[("docs/arch/a.md", b"# A")]);
         Builder::default()
             .build(&tree.path("docs"), &tree.path("site"))
             .unwrap();
         assert_eq!(tree.read("site/_assets/style.css"), shell::STYLE);
+        assert_eq!(tree.read("site/_assets/look.js"), shell::LOOK);
         assert!(
             tree.read("site/arch/a.html")
                 .contains(r#"href="../_assets/style.css""#)

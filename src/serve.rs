@@ -31,6 +31,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tracing::{debug, error, info, warn};
 
 use crate::build::{Builder, Folder};
+use crate::config::LookConfig;
 use crate::live::Live;
 use crate::render::Renderer;
 use crate::shell::{self, Links, Shell};
@@ -46,7 +47,7 @@ pub struct Server {
 }
 
 impl Server {
-    /// A server of a folder of Markdown.
+    /// A server of a folder of Markdown, named `title`, or else by its folder.
     #[must_use]
     pub fn new(root: PathBuf, title: Option<String>) -> Self {
         let shell = Shell::new(Builder::new(title, None).title(&root), Links::Served);
@@ -55,6 +56,15 @@ impl Server {
             renderer: Renderer::new(),
             shell,
             changes: broadcast::channel(16).0,
+        }
+    }
+
+    /// The same, serving pages in a look of their own.
+    #[must_use]
+    pub fn looking(self, look: LookConfig) -> Self {
+        Self {
+            shell: self.shell.looking(look),
+            ..self
         }
     }
 
@@ -115,10 +125,11 @@ impl Server {
             return self.not_found(path);
         };
         let wanted = decoded.trim_start_matches('/');
-        if wanted == shell::STYLE_PATH {
+        if let Some((_, text)) = shell::ASSETS.iter().find(|(asset, _)| *asset == wanted) {
+            let kind = mime_guess::from_path(wanted).first_or_octet_stream();
             return (
-                [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-                shell::STYLE,
+                [(header::CONTENT_TYPE, format!("{kind}; charset=utf-8"))],
+                *text,
             )
                 .into_response();
         }
@@ -444,7 +455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pages_are_in_the_shell_and_the_style_is_served() {
+    async fn pages_are_in_the_shell_and_its_files_are_served() {
         let site = Site::with(&[("docs/arch/dma.md", b"# DMA")]);
         let page = site.get("/arch/dma.md").await.2;
         assert!(
@@ -458,6 +469,12 @@ mod tests {
             (StatusCode::OK, "text/css; charset=utf-8")
         );
         assert_eq!(style, shell::STYLE);
+        let (status, kind, script) = site.get("/_assets/look.js").await;
+        assert_eq!(
+            (status, kind.as_str()),
+            (StatusCode::OK, "text/javascript; charset=utf-8")
+        );
+        assert_eq!(script, shell::LOOK);
     }
 
     #[tokio::test]

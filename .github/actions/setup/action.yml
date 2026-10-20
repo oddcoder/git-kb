@@ -1,7 +1,10 @@
 name: setup
-description: The pinned toolchain and a warm cargo cache.
+description: The pinned toolchain, Node to compile the browser code, and a warm cargo cache.
 
 runs:
   using: composite
   steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: lts/*
     - uses: Swatinem/rust-cache@v2

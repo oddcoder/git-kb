@@ -1,12 +1,22 @@
-//! The page around every page: a bar with the site's name, linked to its top; a trail of the folders a page is
-//! in; and the page itself, in a column narrow enough to read, styled by `assets/style.css`. A built site and a
-//! served one look the same; only their links differ, as a built site's must work from disk.
+//! The page around every page: a bar with the site's name, linked to its top, where `web/src/look.ts` puts the
+//! Aa menu of its look; a trail of the folders a page is in; and the page itself, in a column narrow enough to read, styled by
+//! `assets/style.css`. A built site and a served one look the same; only their links differ, as a built site's
+//! must work from disk.
 
 use std::path::Path;
+
+use crate::config::LookConfig;
 
 /// The site's style sheet, in the binary, and where it is in the site.
 pub const STYLE: &str = include_str!("../assets/style.css");
 pub const STYLE_PATH: &str = "_assets/style.css";
+
+/// The script of the pages' look, compiled from `web/src/look.ts` by `build.rs`, and where it is in the site.
+pub const LOOK: &str = include_str!(concat!(env!("OUT_DIR"), "/look.js"));
+pub const LOOK_PATH: &str = "_assets/look.js";
+
+/// The files every page uses, by their paths in the site.
+pub const ASSETS: [(&str, &str); 2] = [(STYLE_PATH, STYLE), (LOOK_PATH, LOOK)];
 
 /// How a site's pages link to the rest of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +35,8 @@ pub struct Shell {
     links: Links,
     /// Where a built site lives, for its pages' canonical addresses.
     url: Option<String>,
+    /// The site's look, before a reader chooses their own.
+    look: LookConfig,
 }
 
 impl Shell {
@@ -41,6 +53,7 @@ impl Shell {
             name,
             links,
             url: None,
+            look: LookConfig::default(),
         }
     }
 
@@ -48,6 +61,12 @@ impl Shell {
     #[must_use]
     pub fn living_at(self, url: Option<String>) -> Self {
         Self { url, ..self }
+    }
+
+    /// The same, in a look of its own.
+    #[must_use]
+    pub fn looking(self, look: LookConfig) -> Self {
+        Self { look, ..self }
     }
 
     /// A page of the site, in the folder `at`, from the site's top, as `arch` for `arch/overview.md`, written
@@ -62,9 +81,10 @@ impl Shell {
         };
         format!(
             concat!(
-                "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n",
+                "<!doctype html>\n<html lang=\"en\"{look}>\n<head>\n<meta charset=\"utf-8\">\n",
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
-                "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n</head>\n<body>\n",
+                "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n",
+                "<script src=\"{script}\"></script>\n</head>\n<body>\n",
                 "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a></header>\n",
                 "<main class=\"page\">\n{trail}{body}</main>\n{live}</body>\n</html>\n"
             ),
@@ -72,9 +92,11 @@ impl Shell {
                 Links::Served => Self::LIVE,
                 Links::Built => "",
             },
+            look = self.look.attributes(),
             window = window,
             canonical = self.canonical(at, file),
             style = self.to(at, STYLE_PATH),
+            script = self.to(at, LOOK_PATH),
             top = self.folder(at, Path::new("")),
             name = Self::escape(&self.name),
             trail = self.trail(at),
@@ -206,6 +228,26 @@ mod tests {
             !page.contains("crumbs"),
             "a page at the top has no trail: {page}"
         );
+    }
+
+    #[test]
+    fn a_page_has_its_look_and_its_script() {
+        let look = LookConfig {
+            palette: Some("nord".into()),
+            ..LookConfig::default()
+        };
+        let page = Shell::new("docs".into(), Links::Built).looking(look).page(
+            Path::new("arch"),
+            "",
+            "A",
+            "",
+        );
+        for wanted in [
+            r#"<html lang="en" data-palette="nord">"#,
+            r#"<script src="../_assets/look.js"></script>"#,
+        ] {
+            assert!(page.contains(wanted), "{wanted} missing from {page}");
+        }
     }
 
     #[test]

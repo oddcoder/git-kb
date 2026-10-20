@@ -16,14 +16,25 @@
 //!
 //! [build]
 //! out = "target/git-kb"  # where the site is written
+//!
+//!
+//! [look]                 # how the pages look until a reader chooses in the Aa menu; web/src/look.ts's
+//! scheme = "auto"        # light, dark, or auto, as the reader's system is
+//! palette = "github"     # github, paper, solarized, nord or gruvbox
+//! size = 16              # the text's size, in pixels: 14, 15, 16, 18 or 20
+//! font = "sans"          # the text's font: sans, serif or mono
+//! code = "system"        # code's font: system, menlo or courier
 //! ```
 
+use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::Deserialize;
 use tracing::{debug, trace};
+
+use crate::build::Builder;
 
 /// The settings for a folder of Markdown.
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -37,6 +48,7 @@ pub struct Config {
     pub url: Option<String>,
     pub serve: ServeConfig,
     pub build: BuildConfig,
+    pub look: LookConfig,
 }
 
 impl Default for Config {
@@ -47,6 +59,7 @@ impl Default for Config {
             url: None,
             serve: ServeConfig::default(),
             build: BuildConfig::default(),
+            look: LookConfig::default(),
         }
     }
 }
@@ -80,6 +93,41 @@ impl Default for BuildConfig {
         Self {
             out: "target/git-kb".into(),
         }
+    }
+}
+
+/// How the pages look until a reader chooses. git-kb only hands it to them, each part given as an attribute of
+/// their `<html>`; what each may be, and is when not given, is the browser's: `web/src/look.ts` and
+/// `assets/style.css`.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct LookConfig {
+    pub scheme: Option<String>,
+    pub palette: Option<String>,
+    pub size: Option<u16>,
+    pub font: Option<String>,
+    pub code: Option<String>,
+}
+
+impl LookConfig {
+    /// The parts given, as attributes of `<html>`: ` data-palette="nord"`.
+    #[must_use]
+    pub fn attributes(&self) -> String {
+        let size = self.size.map(|size| size.to_string());
+        let parts = [
+            ("scheme", &self.scheme),
+            ("palette", &self.palette),
+            ("size", &size),
+            ("font", &self.font),
+            ("code", &self.code),
+        ];
+        let mut attributes = String::new();
+        for (key, value) in parts {
+            if let Some(value) = value {
+                let _ = write!(attributes, " data-{key}=\"{}\"", Builder::escape(value));
+            }
+        }
+        attributes
     }
 }
 
@@ -324,5 +372,19 @@ title = \"pentasil\"
         let tree = Tree::with(&[("git-kb.toml", "url = \"foobar.xyz\"\n")]);
         let error = format!("{:#}", Config::find(&tree.path("")).unwrap_err());
         assert!(error.contains("https://"), "{error}");
+    }
+
+    #[test]
+    fn the_look_is_read_and_handed_to_the_pages() {
+        let tree = Tree::with(&[(
+            "git-kb.toml",
+            "[look]\npalette = \"nord\"\nsize = 18\nfont = \"a\\\"b\"\n",
+        )]);
+        let (config, _) = Config::find(&tree.path("")).unwrap();
+        assert_eq!(
+            config.look.attributes(),
+            r#" data-palette="nord" data-size="18" data-font="a&quot;b""#
+        );
+        assert_eq!(LookConfig::default().attributes(), "");
     }
 }

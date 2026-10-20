@@ -1,0 +1,10 @@
+{
+  "name": "git-kb-web",
+  "private": true,
+  "description": "git-kb's browser code, in TypeScript, in web/src/: the versions of the tools that compile it. cargo build runs web/build.mjs, which installs them under target/web and writes the compiled scripts into cargo's own folder for them, so nothing compiled is committed.",
+  "type": "module",
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
