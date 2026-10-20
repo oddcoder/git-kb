@@ -9,7 +9,9 @@
 //!
 //! When the folder is in a git repository, `/ref/rev/` is the site at a commit, `rev` being anything git takes, as
 //! `/ref/main/arch/` or `/ref/dced2d8/arch/overview.md`, with a slash in it as `%2F`. Its files are the commit's,
-//! with what its own ignore files ignore left out, as a build of it would have them.
+//! with what its own ignore files ignore left out, as a build of it would have them. Each page says when it last
+//! changed, and `?history` after it, as `/docs/arch/overview.md?history`, lists the commits that changed it;
+//! `/ref/` lists the branches and tags, and every commit that changed a page.
 //!
 //! git-kb's own files are beside the site, not in it, so that no page of the docs can be taken for one: the
 //! pages' style sheet and scripts under `/_assets/`, and `/_events`. Open pages load again when the site changes:
@@ -37,11 +39,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::build::{Builder, Folder};
 use crate::config::LookConfig;
-use crate::git::{Repo, Snapshot};
+use crate::git::{History, Repo, Snapshot};
 use crate::live::Live;
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
-use crate::shell::{self, Links, Shell};
+use crate::shell::{self, Links, PageHistory, Shell};
 
 /// Serves a folder of Markdown.
 #[derive(Debug)]
@@ -61,6 +63,10 @@ struct View<'a> {
     files: Vec<PathBuf>,
     /// The commit shown, when it is not the folder as it is.
     snapshot: Option<Arc<Snapshot>>,
+    /// The last commit, when the folder as it is is shown, to tell which pages have changed since.
+    head: Option<Arc<Snapshot>>,
+    /// The commits up to the one shown, or to the last, that changed the site's pages.
+    history: Option<Arc<History>>,
     shell: Shell,
 }
 
@@ -122,8 +128,8 @@ impl Server {
                 get(|State(server): State<Arc<Self>>| async move { server.events() }),
             )
             .fallback(|State(server): State<Arc<Self>>, uri: Uri| async move {
-                let path = uri.path().to_owned();
-                tokio::task::spawn_blocking(move || server.answer(&path))
+                let (path, query) = (uri.path().to_owned(), uri.query().map(str::to_owned));
+                tokio::task::spawn_blocking(move || server.answer(&path, query.as_deref()))
                     .await
                     .unwrap_or_else(|e| Self::broke(&e.into()))
             })
@@ -138,8 +144,11 @@ impl Server {
     }
 
     /// The answer to a request: for a path of the site, as it is or at a commit, or for one of git-kb's files.
-    fn answer(&self, path: &str) -> Response {
-        debug!(path, "request");
+    fn answer(&self, path: &str, query: Option<&str>) -> Response {
+        debug!(path, query, "request");
+        if path == "/ref/" {
+            return self.revisions();
+        }
         let (snapshot, rest) = if let Some(rest) = path.strip_prefix("/docs") {
             if rest.is_empty() {
                 return Redirect::permanent("/docs/").into_response();
@@ -167,8 +176,29 @@ impl Server {
             return self.missing(&format!("There is no page at {path}."));
         };
         match self.view(snapshot) {
-            Ok(view) => view.answer(decoded.trim_start_matches('/'), path),
+            Ok(view) => view.answer(decoded.trim_start_matches('/'), path, query),
             Err(e) => self.failed(&e),
+        }
+    }
+
+    /// The list of the branches and tags, and of every commit up to the last that changed a page.
+    fn revisions(&self) -> Response {
+        let listed = self.repo.as_ref().map(|repo| -> anyhow::Result<String> {
+            let head = repo.snapshot("HEAD")?;
+            let refs: Vec<_> = repo.refs()?.iter().map(|s| s.revision.clone()).collect();
+            Ok(self.shell.revisions(&refs, &*repo.history(&head)?))
+        });
+        match listed {
+            Some(Ok(body)) => {
+                let shell = self.shell.clone().in_git(true);
+                Html(shell.page(Path::new(""), "", "Revisions", &body, &Nav::none()))
+                    .into_response()
+            }
+            Some(Err(e)) => self.missing(&format!("{e:#}")),
+            None => self.missing(&format!(
+                "{} is not in a git repository",
+                self.root.display()
+            )),
         }
     }
 
@@ -200,14 +230,26 @@ impl Server {
             Some(snapshot) => snapshot.files(),
             None => Builder::files(&self.root, None)?,
         };
+        // A folder in a repository without commits yet has no history.
+        let head = match (&snapshot, &self.repo) {
+            (None, Some(repo)) => repo.snapshot("HEAD").ok(),
+            _ => None,
+        };
+        let history = match (&self.repo, snapshot.as_ref().or(head.as_ref())) {
+            (Some(repo), Some(at)) => Some(repo.history(at)?),
+            _ => None,
+        };
         let shell = self
             .shell
             .clone()
+            .in_git(self.repo.is_some())
             .showing(snapshot.as_ref().map(|s| s.revision.clone()));
         Ok(View {
             server: self,
             files,
             snapshot,
+            head,
+            history,
             shell,
         })
     }
@@ -255,7 +297,7 @@ impl Server {
 
 impl View<'_> {
     /// The answer for a path of the site, `wanted`, from its top, decoded; `path` as it was asked for.
-    fn answer(&self, wanted: &str, path: &str) -> Response {
+    fn answer(&self, wanted: &str, path: &str, query: Option<&str>) -> Response {
         let files = &self.files;
         let at = Path::new(wanted);
         // A folder is a path with pages below it, or the top.
@@ -267,6 +309,9 @@ impl View<'_> {
             return self.folder(at);
         }
         if let Some(file) = files.iter().find(|f| f.as_path() == at) {
+            if query == Some("history") && Server::is_markdown(file) {
+                return self.history(file);
+            }
             return self.file(file);
         }
         // A built site's page, a.html, is its Markdown's, a.md, whatever the case of the letters; and a
@@ -348,7 +393,40 @@ impl View<'_> {
             current: file,
             headings: &page.headings,
         };
-        Html(self.shell.page(at, "", &title, &page.html, &nav)).into_response()
+        let body = self
+            .shell
+            .noted(at, file, &page.html, &self.page_history(file, &bytes));
+        Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
+    }
+
+    /// A page's history, as a page: the commits that changed it.
+    fn history(&self, file: &Path) -> Response {
+        let bytes = match self.read(file) {
+            Ok(bytes) => bytes,
+            Err(e) => return self.server.failed(&e),
+        };
+        let title = self
+            .server
+            .renderer
+            .title(&String::from_utf8_lossy(&bytes))
+            .unwrap_or_else(|| Server::stem(file));
+        let at = file.parent().unwrap_or(Path::new(""));
+        let body = self
+            .shell
+            .history(at, file, &title, &self.page_history(file, &bytes));
+        let pages = self.pages();
+        let nav = Nav {
+            pages: &pages,
+            current: file,
+            headings: &[],
+        };
+        let title = format!("History of {title}");
+        Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
+    }
+
+    /// Where a page, of these bytes, stands against the last commit, and the commits that changed it.
+    fn page_history(&self, file: &Path, bytes: &[u8]) -> PageHistory<'_> {
+        PageHistory::of(self.head.as_deref(), self.history.as_deref(), file, bytes)
     }
 
     /// The answer for a path the site has nothing at, with its pages to go to instead.
@@ -605,6 +683,72 @@ mod tests {
         for path in ["/a.md", "/docsa.md", "/_assets/nope.css"] {
             assert_eq!(site.get(path).await.0, StatusCode::NOT_FOUND, "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_page_says_when_it_last_changed_and_lists_its_commits() {
+        let git = crate::git::tests::Git::new();
+        git.write("docs/a.md", "# A\n\nFirst.");
+        git.commit("write a");
+        git.write("docs/a.md", "# A\n\nSecond.");
+        git.commit("edit a");
+        git.run(&["tag", "v1"]);
+        let site = Site::of(git.top().join("docs"));
+
+        let a = site.get("/docs/a.md").await.2;
+        assert!(a.contains("<p class=\"meta\">Last changed <span"), "{a}");
+        assert!(a.contains(" by T in <a href=\"/ref/"), "{a}");
+        assert!(
+            a.contains(r#"<a href="/docs/a.md?history">History</a>"#),
+            "{a}"
+        );
+        assert!(
+            a.contains(r#"<a class="revisions" href="/ref/">Revisions</a>"#),
+            "{a}"
+        );
+        let history = site.get("/docs/a.md?history").await.2;
+        assert!(
+            history.contains("<title>History of A · docs</title>"),
+            "{history}"
+        );
+        let edit = history.find("edit a").unwrap();
+        assert!(
+            edit < history.find("write a").unwrap(),
+            "newest first: {history}"
+        );
+
+        git.write("docs/a.md", "# A\n\nThird, not committed.");
+        git.write("docs/b.md", "# B");
+        assert!(
+            site.get("/docs/a.md")
+                .await
+                .2
+                .contains("Changed since the last commit")
+        );
+        assert!(
+            site.get("/docs/b.md")
+                .await
+                .2
+                .contains("New page, not committed yet")
+        );
+        assert!(
+            !site.get("/ref/v1/a.md").await.2.contains("Changed since"),
+            "a commit is as it is"
+        );
+
+        let revisions = site.get("/ref/").await.2;
+        assert!(
+            revisions.contains(r#"<a href="/ref/main/">main</a>"#),
+            "{revisions}"
+        );
+        assert!(
+            revisions.contains(r#"<a href="/ref/v1/">v1</a>"#),
+            "{revisions}"
+        );
+        assert!(
+            revisions.contains("edit a") && revisions.contains("write a"),
+            "{revisions}"
+        );
     }
 
     #[tokio::test]

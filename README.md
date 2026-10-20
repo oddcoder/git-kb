@@ -46,7 +46,7 @@ git kb serve docs      # the same, starting from the folder docs
 
 Each command takes a folder, `.` by default. git-kb looks for a `git-kb.toml` file in that folder and in each folder above it, up to the top of the repository. Without one, it shows the folder itself with every setting at its default. `git kb -h` lists the commands. `git kb --help` doesn't work, because git turns it into a request for a manual page.
 
-In a git repository, `git kb serve` also shows the site at any commit, under `/ref/`: `/ref/main/`, `/ref/v1.0/arch/` or `/ref/3f2a1c9/`. The part after `/ref/` is anything `git rev-parse` takes, with a `/` in a branch name written as `%2F`.
+In a git repository, `git kb serve` also shows the site at any commit, under `/ref/`: `/ref/main/`, `/ref/v1.0/arch/` or `/ref/3f2a1c9/`. The part after `/ref/` is anything `git rev-parse` takes, with a `/` in a branch name written as `%2F`. Each page says when it last changed, by whom, and in which commit. Add `?history` to a page's address to list the commits that changed it, and `/ref/` lists the branches, tags and commits. `git kb build` writes the same, apart from the history pages, which need the server: each branch and tag goes into `ref/<name>/`, with their list in `ref/index.html`.
 
 What `.gitignore` files ignore is never shown or built. To leave out more, such as drafts, list it in a `.kbignore` file, which works like `.gitignore`.
 

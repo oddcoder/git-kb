@@ -13,6 +13,10 @@ use crate::config::LookConfig;
 use crate::git::Revision;
 use crate::nav::Nav;
 
+mod history;
+
+pub use history::{PageHistory, PageState};
+
 /// The site's style sheet, in the binary, and where it is in the site.
 pub const STYLE: &str = include_str!("../assets/style.css");
 pub const STYLE_PATH: &str = "_assets/style.css";
@@ -45,6 +49,11 @@ pub struct Shell {
     look: LookConfig,
     /// The commit a served site is shown at, when it is not the folder as it is.
     revision: Option<Revision>,
+    /// Where a built page is among the sites of the folder: `docs`, or `ref/main` for a commit's site, or `ref`
+    /// for the list of them.
+    place: PathBuf,
+    /// Whether the folder is in a git repository, with revisions to list.
+    revisions: bool,
 }
 
 impl Shell {
@@ -63,6 +72,8 @@ impl Shell {
             url: None,
             look: LookConfig::default(),
             revision: None,
+            place: PathBuf::from("docs"),
+            revisions: false,
         }
     }
 
@@ -70,7 +81,30 @@ impl Shell {
     /// `ref/name/`; and its bar names it.
     #[must_use]
     pub fn showing(self, revision: Option<Revision>) -> Self {
-        Self { revision, ..self }
+        let place = revision
+            .as_ref()
+            .map_or_else(|| PathBuf::from("docs"), |r| Path::new("ref").join(&r.name));
+        Self {
+            revision,
+            place,
+            ..self
+        }
+    }
+
+    /// The same, for the list of revisions, which a built site has in `ref/`.
+    #[must_use]
+    pub fn listing_revisions(self) -> Self {
+        Self {
+            revision: None,
+            place: PathBuf::from("ref"),
+            ..self
+        }
+    }
+
+    /// The same, for a folder in a git repository: its bar links to the list of its revisions.
+    #[must_use]
+    pub fn in_git(self, revisions: bool) -> Self {
+        Self { revisions, ..self }
     }
 
     /// The same, for a built site that lives at `url`, ending in `/`: each page names its address there.
@@ -107,7 +141,7 @@ impl Shell {
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
                 "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n",
                 "<script src=\"{script}\"></script>\n</head>\n<body>\n",
-                "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}</header>\n",
+                "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}{revisions}</header>\n",
                 "<div class=\"layout\">\n{side}<main class=\"page\">\n{trail}{body}</main>\n</div>\n",
                 "{live}</body>\n</html>\n"
             ),
@@ -117,6 +151,7 @@ impl Shell {
                 _ => "",
             },
             revision = self.badge(at),
+            revisions = self.revisions_link(at),
             look = self.look.attributes(),
             window = window,
             canonical = self.canonical(at, file),
@@ -339,9 +374,19 @@ impl Shell {
     /// Where a site is among the sites of a folder: `docs` for the folder as it is, or `ref/main` for a commit,
     /// its name's parts as folders.
     fn place(&self) -> PathBuf {
-        self.revision
-            .as_ref()
-            .map_or_else(|| PathBuf::from("docs"), |r| Path::new("ref").join(&r.name))
+        self.place.clone()
+    }
+
+    /// The link to the list of revisions, in the bar, when there are some.
+    fn revisions_link(&self, at: &Path) -> String {
+        if !self.revisions {
+            return String::new();
+        }
+        let href = match self.links {
+            Links::Served => "/ref/".to_string(),
+            Links::Built => format!("{}ref/index.html", self.out(at)),
+        };
+        format!("<a class=\"revisions\" href=\"{href}\">Revisions</a>")
     }
 
     /// A link, from a page in the folder `at`, to the site as it is.

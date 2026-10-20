@@ -1,6 +1,6 @@
-//! The site's git history: its files at any commit, read with gix. A commit's files are its site's as a build
-//! would have them then: what its own `.gitignore` and `.kbignore` files ignore is left out, as on disk. A commit
-//! never changes, so its files, once listed, are kept.
+//! The site's git history: its files at any commit, and the commits that changed its pages, read with gix. A
+//! commit's files are its site's as a build would have them then: what its own `.gitignore` and `.kbignore` files
+//! ignore is left out, as on disk. A commit never changes, so what is read of one is kept.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -18,7 +18,10 @@ pub struct Repo {
     git: gix::ThreadSafeRepository,
     /// The site's folder in the repository, as `docs`, or empty when it is the repository's top.
     prefix: PathBuf,
-    snapshots: Mutex<HashMap<ObjectId, Arc<Snapshot>>>,
+    /// Each commit's files, by its id.
+    files: Mutex<HashMap<ObjectId, Arc<BTreeMap<PathBuf, ObjectId>>>>,
+    /// The history up to each commit, by its id.
+    histories: Mutex<HashMap<ObjectId, Arc<History>>>,
 }
 
 /// A commit, by the name it was asked for by, as `main`, and its id.
@@ -28,6 +31,27 @@ pub struct Revision {
     pub id: ObjectId,
     /// Its id, as short as it can be and still be its own.
     pub short: String,
+}
+
+/// A commit that changed the site: who made it, when, and why, in its message's first line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub id: ObjectId,
+    /// Its id, as short as it can be and still be its own.
+    pub short: String,
+    /// When it was made, in seconds since 1970.
+    pub time: i64,
+    pub author: String,
+    pub summary: String,
+}
+
+/// The commits up to one that changed the site's pages, newest first: each with the pages it made, edited or
+/// removed, against the commit before it; and, for each page, the commits that changed it.
+#[derive(Debug, Default)]
+pub struct History {
+    pub log: Vec<(Change, Vec<PathBuf>)>,
+    /// Each page's commits, as places in the log.
+    pages: BTreeMap<PathBuf, Vec<usize>>,
 }
 
 /// The site's files at a commit, by their paths from its top, as `Builder::files` has them on disk.
@@ -56,7 +80,8 @@ impl Repo {
         Some(Self {
             git: repo,
             prefix,
-            snapshots: Mutex::default(),
+            files: Mutex::default(),
+            histories: Mutex::default(),
         })
     }
 
@@ -84,21 +109,102 @@ impl Repo {
             id: commit.id,
             short: commit.id().shorten_or_id().to_string(),
         };
-        let mut snapshots = self
-            .snapshots
+        let files = self.files_at(&repo, commit.id)?;
+        Ok(Arc::new(Snapshot { revision, files }))
+    }
+
+    /// A commit's files, read once.
+    fn files_at(
+        &self,
+        repo: &gix::Repository,
+        id: ObjectId,
+    ) -> anyhow::Result<Arc<BTreeMap<PathBuf, ObjectId>>> {
+        let kept = self
+            .files
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(snapshot) = snapshots.get(&commit.id) {
-            // Kept by its id; named as asked this time.
-            return Ok(Arc::new(Snapshot {
-                revision,
-                files: Arc::clone(&snapshot.files),
-            }));
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .cloned();
+        if let Some(files) = kept {
+            return Ok(files);
         }
-        let files = Arc::new(self.files(&repo, &commit.tree()?)?);
-        let snapshot = Arc::new(Snapshot { revision, files });
-        snapshots.insert(commit.id, Arc::clone(&snapshot));
-        Ok(snapshot)
+        let files = Arc::new(self.files(repo, &repo.find_commit(id)?.tree()?)?);
+        self.files
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, Arc::clone(&files));
+        Ok(files)
+    }
+
+    /// The commits up to a snapshot's that changed the site's pages, against each one's first parent, as
+    /// `git log --first-parent` would compare them, newest first.
+    ///
+    /// # Errors
+    ///
+    /// When a commit cannot be read.
+    pub fn history(&self, snapshot: &Snapshot) -> anyhow::Result<Arc<History>> {
+        let id = snapshot.revision.id;
+        let kept = self
+            .histories
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .cloned();
+        if let Some(history) = kept {
+            return Ok(history);
+        }
+        let repo = self.git.to_thread_local();
+        let walk = repo
+            .rev_walk([id])
+            .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+            ))
+            .all()?;
+        let mut history = History::default();
+        let none = Arc::new(BTreeMap::new());
+        for info in walk {
+            let info = info?;
+            let now = self.files_at(&repo, info.id)?;
+            let before = match info.parent_ids().next() {
+                Some(parent) => self.files_at(&repo, parent.detach())?,
+                None => Arc::clone(&none),
+            };
+            let markdown =
+                |p: &&PathBuf| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"));
+            let pages: Vec<PathBuf> = now
+                .iter()
+                .filter(|(path, blob)| before.get(*path) != Some(blob))
+                .map(|(path, _)| path)
+                .chain(before.keys().filter(|path| !now.contains_key(*path)))
+                .filter(markdown)
+                .cloned()
+                .collect();
+            if pages.is_empty() {
+                continue;
+            }
+            let commit = info.object()?;
+            let change = Change {
+                id: info.id,
+                short: commit.id().shorten_or_id().to_string(),
+                time: commit.time()?.seconds,
+                author: commit.author()?.name.to_string(),
+                summary: commit.message()?.summary().to_string(),
+            };
+            for page in &pages {
+                history
+                    .pages
+                    .entry(page.clone())
+                    .or_default()
+                    .push(history.log.len());
+            }
+            history.log.push((change, pages));
+        }
+        let history = Arc::new(history);
+        self.histories
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, Arc::clone(&history));
+        Ok(history)
     }
 
     /// The site's files at each branch and tag of the repository, by its name, as `main` or `v1.0`: branches
@@ -210,6 +316,57 @@ impl Snapshot {
     #[must_use]
     pub fn files(&self) -> Vec<PathBuf> {
         self.files.keys().cloned().collect()
+    }
+
+    /// Whether a file has these bytes at its commit: `None` when the commit has no such file.
+    #[must_use]
+    pub fn holds(&self, path: &Path, bytes: &[u8]) -> Option<bool> {
+        let blob = self.files.get(path)?;
+        let hash = gix::objs::compute_hash(blob.kind(), gix::objs::Kind::Blob, bytes).ok()?;
+        Some(hash == *blob)
+    }
+}
+
+impl Change {
+    /// How long before `now`, both in seconds since 1970, it was made, as people say it: `3 days ago`.
+    #[must_use]
+    pub fn ago(&self, now: i64) -> String {
+        let s = (now - self.time).max(0);
+        let (n, unit) = match s {
+            0..60 => return "just now".into(),
+            60..3600 => (s / 60, "minute"),
+            3600..86_400 => (s / 3600, "hour"),
+            86_400..2_592_000 => (s / 86_400, "day"),
+            2_592_000..31_536_000 => (s / 2_592_000, "month"),
+            _ => (s / 31_536_000, "year"),
+        };
+        format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+    }
+
+    /// The day it was made, in UTC: `2026-10-15`.
+    #[must_use]
+    pub fn date(&self) -> String {
+        // Days to a civil date, after Howard Hinnant's civil_from_days.
+        let z = self.time.div_euclid(86_400) + 719_468;
+        let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        format!("{year:04}-{month:02}-{day:02}")
+    }
+}
+
+impl History {
+    /// The commits that changed a page, newest first.
+    pub fn of(&self, page: &Path) -> impl Iterator<Item = &Change> {
+        self.pages
+            .get(page)
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.log[i].0)
     }
 }
 
@@ -358,6 +515,69 @@ pub(crate) mod tests {
             names(&repo.snapshot("HEAD").unwrap()),
             [".kbignore", "a.md", "deep/.gitignore", "deep/keep.tmp"]
         );
+    }
+
+    #[test]
+    fn a_page_s_history_is_the_commits_that_changed_it() {
+        let git = Git::new();
+        git.write("docs/a.md", "# A");
+        git.write("docs/b.md", "# B");
+        git.commit("both");
+        git.write("docs/a.md", "# A, again");
+        git.write("notes.md", "outside the site");
+        git.commit("edit a");
+        git.write("docs/c.png", "not a page");
+        git.commit("an image");
+        git.run(&["rm", "-q", "docs/b.md"]);
+        git.commit("remove b");
+        let repo = Repo::discover(&git.top().join("docs")).unwrap();
+        let history = repo.history(&repo.snapshot("HEAD").unwrap()).unwrap();
+        let log: Vec<(&str, Vec<&str>)> = history
+            .log
+            .iter()
+            .map(|(c, pages)| {
+                (
+                    c.summary.as_str(),
+                    pages.iter().map(|p| p.to_str().unwrap()).collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            log,
+            [
+                ("remove b", vec!["b.md"]),
+                ("edit a", vec!["a.md"]),
+                ("both", vec!["a.md", "b.md"])
+            ]
+        );
+        let a: Vec<&str> = history
+            .of(Path::new("a.md"))
+            .map(|c| c.summary.as_str())
+            .collect();
+        assert_eq!(a, ["edit a", "both"]);
+        let (last, _) = &history.log[0];
+        assert_eq!(last.author, "T");
+        assert!(last.id.to_string().starts_with(&last.short));
+        let head = repo.snapshot("HEAD").unwrap();
+        assert_eq!(head.holds(Path::new("a.md"), b"# A, again"), Some(true));
+        assert_eq!(head.holds(Path::new("a.md"), b"# A, edited"), Some(false));
+        assert_eq!(head.holds(Path::new("new.md"), b""), None);
+    }
+
+    #[test]
+    fn a_change_says_when_it_was_made() {
+        let change = Change {
+            id: ObjectId::null(gix::hash::Kind::Sha1),
+            short: "0000000".into(),
+            time: 1_760_486_400,
+            author: "T".into(),
+            summary: String::new(),
+        };
+        assert_eq!(change.date(), "2025-10-15");
+        assert_eq!(change.ago(change.time + 30), "just now");
+        assert_eq!(change.ago(change.time + 3600), "1 hour ago");
+        assert_eq!(change.ago(change.time + 3 * 86_400), "3 days ago");
+        assert_eq!(Change { time: 0, ..change }.date(), "1970-01-01");
     }
 
     #[test]

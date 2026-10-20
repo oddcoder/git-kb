@@ -1,7 +1,8 @@
 //! `git kb build`: a folder of Markdown written as a static site, a folder of files to open from disk or put on
 //! any host. The site is in its `docs/`, as the folder is, and, when the folder is in a git repository, in
-//! `ref/main/`, `ref/v1.0/` and so on, as it is at each branch and tag; git-kb's own files, the pages' style
-//! sheet and scripts, are beside them, in `_assets/`, and the top's `index.html` sends to `docs/`.
+//! `ref/main/`, `ref/v1.0/` and so on, as it is at each branch and tag, each page saying when it last changed,
+//! and `ref/index.html` lists them all, and the commits that changed a page; git-kb's own files, the pages'
+//! style sheet and scripts, are beside them, in `_assets/`, and the top's `index.html` sends to `docs/`.
 //!
 //! Each page is written as HTML beside where its Markdown is, `arch/overview.md` as `arch/overview.html`, with its links to other pages made links to theirs, and every other file, such as an
 //! image, is copied as it is. Every folder with pages in it, or below it, gets an `index.html`: its
@@ -15,16 +16,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use ignore::WalkBuilder;
 use tracing::debug;
 
 use crate::config::LookConfig;
-use crate::git::Repo;
+use crate::git::{History, Repo, Snapshot};
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
-use crate::shell::{self, Links, Shell};
+use crate::shell::{self, Links, PageHistory, Shell};
 
 /// What a build wrote.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -45,6 +47,13 @@ pub struct Built {
 pub(crate) struct Folder {
     pub(crate) pages: BTreeMap<String, String>,
     pub(crate) folders: BTreeSet<String>,
+}
+
+/// What a site's pages know of their history: the commits up to the one built, and, for the folder as it is,
+/// the last commit, to tell which pages have changed since.
+struct Past {
+    history: Arc<History>,
+    head: Option<Arc<Snapshot>>,
 }
 
 /// Builds folders of Markdown as sites.
@@ -94,20 +103,38 @@ impl Builder {
         let folder = fs::canonicalize(folder).with_context(|| folder.display().to_string())?;
         Self::prepare(out, &folder)?;
         let out = fs::canonicalize(out).with_context(|| out.display().to_string())?;
+        // A folder in a repository without commits yet has no history.
+        let repo = Repo::discover(&folder);
+        let head = repo.as_ref().and_then(|repo| repo.snapshot("HEAD").ok());
         let shell = Shell::new(self.title(&folder), Links::Built)
             .living_at(self.url.clone())
-            .looking(self.look.clone());
+            .looking(self.look.clone())
+            .in_git(head.is_some());
 
+        let past = match (&repo, &head) {
+            (Some(repo), Some(head)) => Some(Past {
+                history: repo.history(head)?,
+                head: Some(Arc::clone(head)),
+            }),
+            _ => None,
+        };
         let files = Self::files(&folder, Some(&out))?;
-        let mut built = self.site(&shell, &files, &out.join("docs"), |f| {
+        let read = |f: &Path| {
             let from = folder.join(f);
             fs::read(&from).with_context(|| from.display().to_string())
-        })?;
-        if let Some(repo) = Repo::discover(&folder) {
-            for snapshot in repo.refs()? {
+        };
+        let mut built = self.site(&shell, &files, &out.join("docs"), read, past.as_ref())?;
+        if let (Some(repo), Some(past)) = (&repo, &past) {
+            let refs = repo.refs()?;
+            for snapshot in &refs {
                 let shell = shell.clone().showing(Some(snapshot.revision.clone()));
                 let to = out.join("ref").join(&snapshot.revision.name);
-                let of = self.site(&shell, &snapshot.files(), &to, |f| repo.read(&snapshot, f))?;
+                let of = Past {
+                    history: repo.history(snapshot)?,
+                    head: None,
+                };
+                let read = |f: &Path| repo.read(snapshot, f);
+                let of = self.site(&shell, &snapshot.files(), &to, read, Some(&of))?;
                 debug!(
                     name = snapshot.revision.name,
                     pages = of.pages,
@@ -115,6 +142,16 @@ impl Builder {
                 );
                 built.refs += 1;
             }
+            let revisions: Vec<_> = refs.iter().map(|s| s.revision.clone()).collect();
+            let listing = shell.clone().listing_revisions();
+            let body = listing.revisions(&revisions, &past.history);
+            let index = out.join("ref").join("index.html");
+            fs::create_dir_all(out.join("ref"))?;
+            fs::write(
+                &index,
+                listing.page(Path::new(""), "", "Revisions", &body, &Nav::none()),
+            )
+            .with_context(|| index.display().to_string())?;
         }
 
         for (path, text) in shell::ASSETS {
@@ -138,13 +175,14 @@ impl Builder {
         Ok(built)
     }
 
-    /// Writes one site, of the files given, each read by `read`, into `to`.
+    /// Writes one site, of the files given, each read by `read`, into `to`, its pages with their history.
     fn site(
         &self,
         shell: &Shell,
         files: &[PathBuf],
         to: &Path,
         read: impl Fn(&Path) -> anyhow::Result<Vec<u8>>,
+        past: Option<&Past>,
     ) -> anyhow::Result<Built> {
         let mut built = Built::default();
         let mut folders: BTreeMap<PathBuf, Folder> = BTreeMap::new();
@@ -172,7 +210,13 @@ impl Builder {
             let bytes = read(path)?;
             if markdown {
                 let text = String::from_utf8_lossy(&bytes);
-                let (html, title) = self.page(shell, &pages, &text, path, &readmes);
+                let history = PageHistory::of(
+                    past.and_then(|p| p.head.as_deref()),
+                    past.map(|p| &*p.history),
+                    path,
+                    &bytes,
+                );
+                let (html, title) = self.page(shell, &pages, &text, path, &readmes, &history);
                 fs::write(&into, html).with_context(|| into.display().to_string())?;
                 debug!(page = %path.display(), "rendered");
                 built.pages += 1;
@@ -251,6 +295,7 @@ impl Builder {
         markdown: &str,
         path: &Path,
         readmes: &BTreeMap<PathBuf, String>,
+        history: &PageHistory,
     ) -> (String, String) {
         let page = self
             .renderer
@@ -265,7 +310,8 @@ impl Builder {
             current: path,
             headings: &page.headings,
         };
-        (shell.page(at, &file, &title, &page.html, &nav), title)
+        let body = shell.noted(at, path, &page.html, history);
+        (shell.page(at, &file, &title, &body, &nav), title)
     }
 
     /// A page filed under its folder, by the name of the HTML file it was written as and its title, and each
@@ -1003,6 +1049,30 @@ mod tests {
             "{topic}"
         );
         assert!(read("index.html").contains("url=docs/index.html"));
+        let main = read("ref/main/a.html");
+        assert!(
+            main.contains("<p class=\"meta\">Last changed on ") && main.contains(" in <code"),
+            "a built page names its last commit, plainly: {main}"
+        );
+        assert!(
+            read("docs/a.html").contains("Changed since the last commit"),
+            "{}",
+            read("docs/a.html")
+        );
+        let revisions = read("ref/index.html");
+        assert!(
+            revisions.contains(r#"<a href="main/index.html">main</a>"#),
+            "{revisions}"
+        );
+        assert!(
+            revisions.contains(r#"<a href="topic/x/index.html">topic/x</a>"#),
+            "{revisions}"
+        );
+        assert!(revisions.contains("<code>"), "{revisions}");
+        assert!(
+            revisions.contains(r#"href="../_assets/style.css""#),
+            "{revisions}"
+        );
     }
 
     #[test]
