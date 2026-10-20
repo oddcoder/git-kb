@@ -193,6 +193,33 @@ pre code { padding: 0; font-size: 100%; background: none; }
 .hl-variable { color: var(--code-variable); }
 .hl-invalid { color: var(--code-keyword); text-decoration: underline wavy; }
 
+/* Two versions of a page compared: tabs for the changes in place, each version, and the source by line. */
+.tabs { display: inline-flex; margin: 0 0 16px; padding: 2px; border: 1px solid var(--line); border-radius: 8px;
+        background: var(--subtle); }
+.tabs label { padding: 2px 12px; border-radius: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
+.tabs label:hover { color: var(--text); }
+.versions > input { position: absolute; opacity: 0; pointer-events: none; }
+.panel { display: none; }
+#v-changes:checked ~ .p-changes, #v-before:checked ~ .p-before, #v-after:checked ~ .p-after,
+#v-lines:checked ~ .p-lines { display: block; }
+#v-changes:checked ~ .tabs [for="v-changes"], #v-before:checked ~ .tabs [for="v-before"],
+#v-after:checked ~ .tabs [for="v-after"], #v-lines:checked ~ .tabs [for="v-lines"] {
+  background: var(--page); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.diff-ins, .diff-del, .diff-chg { margin: 0 0 16px -16px; padding: 4px 0 1px 13px; border-left: 3px solid;
+                                  border-radius: 2px; }
+.diff-ins { border-color: light-dark(#1a7f37, #3fb950); background: light-dark(#dafbe1, rgba(46, 160, 67, 0.15)); }
+.diff-del { border-color: light-dark(#cf222e, #f85149); background: light-dark(#ffebe9, rgba(248, 81, 73, 0.1)); }
+.diff-del > * { opacity: 0.7; }
+.diff-chg { border-color: light-dark(#9a6700, #d29922); }
+ins { border-radius: 2px; background: light-dark(#aceebb, rgba(46, 160, 67, 0.4)); text-decoration: none; }
+del { border-radius: 2px; background: light-dark(#ffcecb, rgba(248, 81, 73, 0.4)); }
+pre.diff-lines { padding: 8px 0; }
+pre.diff-lines code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-lines span { display: block; padding: 0 12px; }
+.diff-lines .l-ins { background: light-dark(#dafbe1, rgba(46, 160, 67, 0.15)); }
+.diff-lines .l-del { background: light-dark(#ffebe9, rgba(248, 81, 73, 0.15)); }
+.diff-lines .l-same { color: var(--muted); }
+
 /* A folder's list of its folders and pages. */
 .listing { padding-left: 0; list-style: none; }
 .listing li { padding: 6px 0; border-bottom: 1px solid var(--line); }

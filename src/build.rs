@@ -23,10 +23,11 @@ use ignore::WalkBuilder;
 use tracing::debug;
 
 use crate::config::LookConfig;
+use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
-use crate::shell::{self, Links, PageHistory, Shell};
+use crate::shell::{self, Comparison, Links, PageHistory, PageState, Shell, Version};
 
 /// What a build wrote.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -51,9 +52,19 @@ pub(crate) struct Folder {
 
 /// What a site's pages know of their history: the commits up to the one built, and, for the folder as it is,
 /// the last commit, to tell which pages have changed since.
-struct Past {
+struct Past<'a> {
+    repo: &'a Repo,
     history: Arc<History>,
     head: Option<Arc<Snapshot>>,
+}
+
+/// A page being built, for what is written of it besides itself.
+struct Page<'a> {
+    shell: &'a Shell,
+    pages: &'a Pages,
+    path: &'a Path,
+    readmes: &'a BTreeMap<PathBuf, String>,
+    title: &'a str,
 }
 
 /// Builds folders of Markdown as sites.
@@ -113,6 +124,7 @@ impl Builder {
 
         let past = match (&repo, &head) {
             (Some(repo), Some(head)) => Some(Past {
+                repo,
                 history: repo.history(head)?,
                 head: Some(Arc::clone(head)),
             }),
@@ -130,6 +142,7 @@ impl Builder {
                 let shell = shell.clone().showing(Some(snapshot.revision.clone()));
                 let to = out.join("ref").join(&snapshot.revision.name);
                 let of = Past {
+                    repo,
                     history: repo.history(snapshot)?,
                     head: None,
                 };
@@ -218,6 +231,16 @@ impl Builder {
                 );
                 let (html, title) = self.page(shell, &pages, &text, path, &readmes, &history);
                 fs::write(&into, html).with_context(|| into.display().to_string())?;
+                if let Some(past) = past {
+                    let page = Page {
+                        shell,
+                        pages: &pages,
+                        path,
+                        readmes: &readmes,
+                        title: &title,
+                    };
+                    self.comparisons(&page, past, &history, &text, to)?;
+                }
                 debug!(page = %path.display(), "rendered");
                 built.pages += 1;
                 Self::file_under(&mut folders, &written, title);
@@ -312,6 +335,95 @@ impl Builder {
         };
         let body = shell.noted(at, path, &page.html, history);
         (shell.page(at, &file, &title, &body, &nav), title)
+    }
+
+    /// A page's comparisons, beside it: what each commit that changed it changed, and, in the folder as it is,
+    /// how it differs from the last commit.
+    fn comparisons(
+        &self,
+        page: &Page,
+        past: &Past,
+        history: &PageHistory,
+        now: &str,
+        to: &Path,
+    ) -> anyhow::Result<()> {
+        let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+        // The page at a commit, or nothing where it is not, as before the first commit.
+        let at = |rev: &str| -> String {
+            past.repo
+                .snapshot(rev)
+                .and_then(|at| past.repo.read(&at, page.path))
+                .map(text)
+                .unwrap_or_default()
+        };
+        let here = Version {
+            label: "the working copy".into(),
+            href: Some(page.shell.link(
+                page.path.parent().unwrap_or(Path::new("")),
+                &page.path.with_extension("html"),
+            )),
+        };
+        for change in &history.changes {
+            let id = change.id.to_string();
+            let (old, new) = (at(&format!("{id}^")), at(&id));
+            let from = Version {
+                label: format!("before {}", change.short),
+                href: None,
+            };
+            let then = Version {
+                label: change.short.clone(),
+                href: None,
+            };
+            self.comparison(page, &change.short, &old, &new, from, then, to)?;
+        }
+        if past.head.is_some() && history.state != PageState::Committed {
+            let from = Version {
+                label: "the last commit".into(),
+                href: None,
+            };
+            let old = at("HEAD");
+            self.comparison(page, "uncommitted", &old, now, from, here, to)?;
+        }
+        Ok(())
+    }
+
+    /// One comparison of a page, written beside it as `page~with.html`.
+    #[expect(clippy::too_many_arguments)]
+    fn comparison(
+        &self,
+        page: &Page,
+        with: &str,
+        old: &str,
+        new: &str,
+        from: Version,
+        then: Version,
+        to: &Path,
+    ) -> anyhow::Result<()> {
+        let moved = |dest: &str| Self::moved(page.path, dest, page.readmes);
+        let diff = Diff::pages(old, new, &self.renderer, &moved);
+        let comparison = Comparison {
+            title: page.title,
+            from,
+            to: then,
+            diff: &diff,
+            before: self.renderer.render_with(old, &moved).html,
+            after: self.renderer.render_with(new, &moved).html,
+            lines: Diff::lines(old, new),
+        };
+        let at = page.path.parent().unwrap_or(Path::new(""));
+        let written = Shell::compared(page.path, with);
+        let file = written.file_name().unwrap_or_default().to_string_lossy();
+        let nav = Nav {
+            pages: page.pages,
+            current: page.path,
+            headings: &[],
+        };
+        let title = format!("Changes to {}", page.title);
+        let html = page
+            .shell
+            .page(at, &file, &title, &page.shell.compare(&comparison), &nav);
+        let into = to.join(&written);
+        fs::write(&into, html).with_context(|| into.display().to_string())
     }
 
     /// A page filed under its folder, by the name of the HTML file it was written as and its title, and each
@@ -1072,6 +1184,50 @@ mod tests {
         assert!(
             revisions.contains(r#"href="../_assets/style.css""#),
             "{revisions}"
+        );
+    }
+
+    #[test]
+    fn each_page_s_changes_are_built_beside_it() {
+        let git = crate::git::tests::Git::new();
+        git.write("docs/a.md", "# A\n\nThe quick brown fox.\n");
+        git.commit("write a");
+        git.write("docs/a.md", "# A\n\nThe quick red fox.\n");
+        git.commit("edit a");
+        git.write("docs/a.md", "# A\n\nThe quick red fox.\n\nNot committed.\n");
+        let site = git.top().join("site");
+        Builder::default()
+            .build(&git.top().join("docs"), &site)
+            .unwrap();
+        let read = |path: &Path| fs::read_to_string(site.join(path)).unwrap();
+        let page = read(Path::new("docs/a.html"));
+        assert!(
+            page.contains(r#"<a href="./a~uncommitted.html">Changed since the last commit</a>"#),
+            "{page}"
+        );
+        let uncommitted = read(Path::new("docs/a~uncommitted.html"));
+        assert!(
+            uncommitted.contains("<p>Not committed.</p>"),
+            "{uncommitted}"
+        );
+        let commits: Vec<String> = fs::read_dir(site.join("ref/main"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("a~"))
+            .collect();
+        assert_eq!(
+            commits.len(),
+            2,
+            "one for each commit that changed it: {commits:?}"
+        );
+        let edit = commits
+            .iter()
+            .map(|n| read(&Path::new("ref/main").join(n)))
+            .find(|html| html.contains("<del>brown</del><ins>red</ins>"));
+        assert!(edit.is_some(), "the edit's changes are marked");
+        assert!(
+            read(Path::new("ref/main/a.html")).contains(r#"(<a href="./a~"#),
+            "a page links what its last commit changed"
         );
     }
 

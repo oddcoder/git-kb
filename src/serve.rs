@@ -39,11 +39,12 @@ use tracing::{debug, error, info, warn};
 
 use crate::build::{Builder, Folder};
 use crate::config::LookConfig;
+use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
 use crate::live::Live;
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
-use crate::shell::{self, Links, PageHistory, Shell};
+use crate::shell::{self, Comparison, Links, PageHistory, Shell, Version};
 
 /// Serves a folder of Markdown.
 #[derive(Debug)]
@@ -330,6 +331,11 @@ impl View<'_> {
             if query == Some("history") && Server::is_markdown(file) {
                 return self.history(file);
             }
+            if let Some(from) = query.and_then(|q| q.strip_prefix("diff="))
+                && Server::is_markdown(file)
+            {
+                return self.compare(file, &percent_decode_str(from).decode_utf8_lossy());
+            }
             return self.file(file);
         }
         // A built site's page, a.html, is its Markdown's, a.md, whatever the case of the letters; and a
@@ -439,6 +445,66 @@ impl View<'_> {
             headings: &[],
         };
         let title = format!("History of {title}");
+        Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
+    }
+
+    /// A page compared: as it was at the commit `from` names, with it as shown.
+    fn compare(&self, file: &Path, from: &str) -> Response {
+        let Some(repo) = &self.server.repo else {
+            return self.server.missing(&format!(
+                "{} is not in a git repository",
+                self.server.root.display()
+            ));
+        };
+        let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+        let old = match repo.snapshot(from) {
+            // A page not at the commit was added since.
+            Ok(at) => repo.read(&at, file).map(text).unwrap_or_default(),
+            // The commit before the first is nothing.
+            Err(_)
+                if from
+                    .strip_suffix('^')
+                    .is_some_and(|c| repo.snapshot(c).is_ok()) =>
+            {
+                String::new()
+            }
+            Err(e) => return self.server.missing(&format!("{e:#}")),
+        };
+        let new = match self.read(file) {
+            Ok(bytes) => text(bytes),
+            Err(e) => return self.server.failed(&e),
+        };
+        let renderer = &self.server.renderer;
+        let title = renderer.title(&new).unwrap_or_else(|| Server::stem(file));
+        let at = file.parent().unwrap_or(Path::new(""));
+        let diff = Diff::pages(&old, &new, renderer, &|_| None);
+        let to = match &self.snapshot {
+            Some(snapshot) => snapshot.revision.name.clone(),
+            None => "the working copy".into(),
+        };
+        let comparison = Comparison {
+            title: &title,
+            from: Version {
+                label: from.to_owned(),
+                href: self.shell.at_commit(from, file),
+            },
+            to: Version {
+                label: to,
+                href: Some(self.shell.link(at, file)),
+            },
+            diff: &diff,
+            before: renderer.render(&old).html,
+            after: renderer.render(&new).html,
+            lines: Diff::lines(&old, &new),
+        };
+        let pages = self.pages();
+        let nav = Nav {
+            pages: &pages,
+            current: file,
+            headings: &[],
+        };
+        let body = self.shell.compare(&comparison);
+        let title = format!("Changes to {title}");
         Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
     }
 
@@ -766,6 +832,49 @@ mod tests {
         assert!(
             revisions.contains("edit a") && revisions.contains("write a"),
             "{revisions}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_is_compared_with_itself_at_a_commit() {
+        let git = crate::git::tests::Git::new();
+        git.write("docs/a.md", "# A\n\nThe quick brown fox.\n");
+        git.commit("write a");
+        git.write("docs/a.md", "# A\n\nThe quick red fox.\n\nMore.\n");
+        git.commit("edit a");
+        git.write("docs/a.md", "# A\n\nThe quick red fox.\n");
+        let site = Site::of(git.top().join("docs"));
+
+        let uncommitted = site.get("/docs/a.md?diff=HEAD").await.2;
+        assert!(
+            uncommitted.contains("<title>Changes to A · docs</title>"),
+            "{uncommitted}"
+        );
+        assert!(uncommitted.contains("1 change from"), "{uncommitted}");
+        assert!(
+            uncommitted.contains(r#"<div class="diff-del" id="change-1"><p>More.</p>"#),
+            "{uncommitted}"
+        );
+        let page = site.get("/docs/a.md").await.2;
+        assert!(
+            page.contains(r#"<a href="/docs/a.md?diff=HEAD">Changed since the last commit</a>"#),
+            "{page}"
+        );
+        assert!(page.contains("?diff="), "{page}");
+
+        let commit = site.get("/ref/main/a.md?diff=main%5E").await.2;
+        assert!(
+            commit.contains("<del>brown</del><ins>red</ins>"),
+            "{commit}"
+        );
+        let first = site.get("/ref/main~1/a.md?diff=main~1%5E").await.2;
+        assert!(
+            first.contains(r#"<div class="diff-ins" id="change-1">"#),
+            "before the first commit, the page was not: {first}"
+        );
+        assert_eq!(
+            site.get("/docs/a.md?diff=nope").await.0,
+            StatusCode::NOT_FOUND
         );
     }
 

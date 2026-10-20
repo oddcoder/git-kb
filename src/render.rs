@@ -4,6 +4,7 @@
 //!
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::OnceLock;
 
 use pulldown_cmark::{
@@ -108,6 +109,56 @@ impl Renderer {
     #[must_use]
     pub fn render(&self, markdown: &str) -> Page {
         self.render_with(markdown, &|_| None)
+    }
+
+    /// Where each of a page's top-level blocks is in its text: each paragraph, heading, list, table, code block
+    /// and so on, as a range of its bytes.
+    #[must_use]
+    pub fn block_ranges(&self, markdown: &str) -> Vec<Range<usize>> {
+        let mut depth = 0usize;
+        let mut out = vec![];
+        for (event, range) in Parser::new_ext(markdown, self.options).into_offset_iter() {
+            match event {
+                Event::Start(_) => {
+                    if depth == 0 {
+                        out.push(range);
+                    }
+                    depth += 1;
+                }
+                Event::End(_) => depth -= 1,
+                Event::Rule | Event::Html(_) if depth == 0 => out.push(range),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// The source of each of a page's top-level blocks, for comparing two versions of it block by block.
+    #[must_use]
+    pub fn blocks<'t>(&self, markdown: &'t str) -> Vec<&'t str> {
+        self.block_ranges(markdown)
+            .into_iter()
+            .map(|r| markdown[r].trim_end())
+            .collect()
+    }
+
+    /// A page's link reference definitions, as Markdown, so that a block of it rendered alone keeps its links.
+    #[must_use]
+    pub fn references(&self, markdown: &str) -> String {
+        let mut parser = Parser::new_ext(markdown, self.options);
+        parser.by_ref().for_each(drop);
+        parser
+            .reference_definitions()
+            .iter()
+            .map(|(label, def)| match &def.title {
+                Some(title) => format!(
+                    "[{label}]: <{}> \"{}\"\n",
+                    def.dest,
+                    title.replace('"', "\\\"")
+                ),
+                None => format!("[{label}]: <{}>\n", def.dest),
+            })
+            .collect()
     }
 
     /// A page's title, as `render` gives it, without rendering the rest: the text of its first top-level heading.
@@ -380,6 +431,26 @@ mod tests {
         );
         assert_eq!(Renderer::new().render("## Only a subheading").title, None);
         assert_eq!(Renderer::new().render("Just text.").title, None);
+    }
+
+    #[test]
+    fn a_page_is_its_blocks_and_keeps_its_references() {
+        let renderer = Renderer::new();
+        let page = "# Title\n\nA [link][x].\n\n- one\n- two\n\n---\n\n[x]: dma.md \"DMA\"\n";
+        assert_eq!(
+            renderer.blocks(page),
+            ["# Title", "A [link][x].", "- one\n- two", "---"]
+        );
+        let references = renderer.references(page);
+        assert_eq!(references, "[x]: <dma.md> \"DMA\"\n");
+        let alone = renderer.render(&format!("A [link][x].\n\n{references}"));
+        assert!(
+            alone
+                .html
+                .contains(r#"<a href="dma.md" title="DMA">link</a>"#),
+            "{}",
+            alone.html
+        );
     }
 
     #[test]

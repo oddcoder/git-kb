@@ -1,0 +1,314 @@
+//! Two versions of a page, as one page with the changes marked in place. The versions are compared block by
+//! block: a block that is the same shows as it is, a new one as inserted, a gone one as deleted. A block that was
+//! edited, sharing at least half its words with the old, shows once with its changed words marked; code and
+//! tables, whose words are not prose, show as the old block deleted and the new one inserted.
+
+use std::fmt::Write;
+
+use similar::{Algorithm, DiffTag, capture_diff_slices};
+
+use crate::render::{Moved, Renderer};
+
+/// Two versions of a page compared: the newer, with what changed since the older marked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diff {
+    pub html: String,
+    /// How many places changed; each is `#change-N`.
+    pub changes: usize,
+}
+
+impl Diff {
+    /// Two versions of a page compared, each block rendered as the page renders it, its links where `moved`
+    /// says they are.
+    #[must_use]
+    pub fn pages(old: &str, new: &str, renderer: &Renderer, moved: Moved) -> Self {
+        let (old_refs, new_refs) = (renderer.references(old), renderer.references(new));
+        let (a, b) = (renderer.blocks(old), renderer.blocks(new));
+        let render = |block: &str, refs: &str| {
+            Self::without_ids(
+                &renderer
+                    .render_with(&format!("{block}\n\n{refs}"), moved)
+                    .html,
+            )
+        };
+        let mut diff = Self {
+            html: String::new(),
+            changes: 0,
+        };
+        for op in capture_diff_slices(Algorithm::Patience, &a, &b) {
+            let (tag, old_range, new_range) = op.as_tag_tuple();
+            match tag {
+                DiffTag::Equal => {
+                    for i in new_range {
+                        diff.html.push_str(&render(b[i], &new_refs));
+                    }
+                }
+                DiffTag::Delete => {
+                    for i in old_range {
+                        diff.mark("del", &render(a[i], &old_refs));
+                    }
+                }
+                DiffTag::Insert => {
+                    for i in new_range {
+                        diff.mark("ins", &render(b[i], &new_refs));
+                    }
+                }
+                DiffTag::Replace => {
+                    // The blocks paired in order: edits in place, then whatever is left over gone or new.
+                    let (olds, news) = (&a[old_range], &b[new_range]);
+                    for i in 0..olds.len().max(news.len()) {
+                        match (olds.get(i), news.get(i)) {
+                            (Some(o), Some(n)) => {
+                                let (o, n) = (render(o, &old_refs), render(n, &new_refs));
+                                if Self::prose(&o) && Self::prose(&n) && Self::alike(&o, &n) {
+                                    diff.mark("chg", &Self::words(&o, &n));
+                                } else {
+                                    diff.mark("del", &o);
+                                    diff.mark("ins", &n);
+                                }
+                            }
+                            (Some(o), None) => diff.mark("del", &render(o, &old_refs)),
+                            (None, Some(n)) => diff.mark("ins", &render(n, &new_refs)),
+                            (None, None) => {}
+                        }
+                    }
+                }
+            }
+        }
+        diff
+    }
+
+    /// Two texts compared line by line, as a listing with each line marked as kept, removed or added.
+    #[must_use]
+    pub fn lines(old: &str, new: &str) -> String {
+        let (a, b): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+        let mut out = String::from("<pre class=\"diff-lines\"><code>");
+        let mut line = |class: &str, sign: char, text: &str| {
+            // Each line is a block of its own, so no newline goes between them.
+            let _ = write!(
+                out,
+                "<span class=\"{class}\">{sign} {}</span>",
+                Self::escape(text)
+            );
+        };
+        for op in capture_diff_slices(Algorithm::Patience, &a, &b) {
+            let (tag, old_range, new_range) = op.as_tag_tuple();
+            if tag == DiffTag::Equal {
+                new_range.for_each(|i| line("l-same", ' ', b[i]));
+            } else {
+                old_range.for_each(|i| line("l-del", '-', a[i]));
+                new_range.for_each(|i| line("l-ins", '+', b[i]));
+            }
+        }
+        out.push_str("</code></pre>");
+        out
+    }
+
+    /// HTML with its ids taken out, so that a copy of a heading, in a comparison or a hidden tab, is not where a
+    /// link to the heading goes.
+    #[must_use]
+    pub fn without_ids(html: &str) -> String {
+        html.replace(" id=\"", " data-id=\"")
+    }
+
+    /// A changed block, marked as one of the changes, and numbered.
+    fn mark(&mut self, class: &str, body: &str) {
+        self.changes += 1;
+        let _ = write!(
+            self.html,
+            "<div class=\"diff-{class}\" id=\"change-{}\">{body}</div>",
+            self.changes
+        );
+    }
+
+    /// Whether two blocks of HTML share enough of their words, at least half, to read as one edited rather
+    /// than replaced.
+    fn alike(old: &str, new: &str) -> bool {
+        let words = |html| -> Vec<&str> {
+            Self::tokens(html)
+                .into_iter()
+                .filter(|t| !t.starts_with('<') && !t.trim().is_empty())
+                .collect()
+        };
+        Self::likeness(&words(old), &words(new)) >= 0.5
+    }
+
+    /// The share of two lists of words that they have in common, from 0 to 1.
+    fn likeness(a: &[&str], b: &[&str]) -> f64 {
+        if a.is_empty() && b.is_empty() {
+            return 1.0;
+        }
+        let same: usize = capture_diff_slices(Algorithm::Myers, a, b)
+            .iter()
+            .filter(|op| op.as_tag_tuple().0 == DiffTag::Equal)
+            .map(|op| op.new_range().len())
+            .sum();
+        // Counts of words, far below where a float loses any.
+        #[expect(clippy::cast_precision_loss)]
+        let share = 2.0 * same as f64 / (a.len() + b.len()) as f64;
+        share
+    }
+
+    /// Whether rendered HTML is prose, whose words can be compared, rather than code or a table.
+    fn prose(html: &str) -> bool {
+        !["<script", "<pre", "<table", "<figure"]
+            .iter()
+            .any(|t| html.contains(t))
+    }
+
+    /// The new HTML with the words that changed from the old in `<del>` and `<ins>`. Tags are kept from the new
+    /// version only, so the result stays well formed; words are compared as words, tags as wholes.
+    fn words(old: &str, new: &str) -> String {
+        let (a, b) = (Self::tokens(old), Self::tokens(new));
+        let mut out = String::new();
+        for op in capture_diff_slices(Algorithm::Myers, &a, &b) {
+            let (tag, old_range, new_range) = op.as_tag_tuple();
+            match tag {
+                DiffTag::Equal => b[new_range].iter().for_each(|t| out.push_str(t)),
+                DiffTag::Delete => Self::wrap(&a[old_range], "del", false, &mut out),
+                DiffTag::Insert => Self::wrap(&b[new_range], "ins", true, &mut out),
+                DiffTag::Replace => {
+                    Self::wrap(&a[old_range], "del", false, &mut out);
+                    Self::wrap(&b[new_range], "ins", true, &mut out);
+                }
+            }
+        }
+        out
+    }
+
+    /// Runs of words in `<del>` or `<ins>`, with tags between them closed around, and kept only when asked.
+    fn wrap(tokens: &[&str], tag: &str, keep_tags: bool, out: &mut String) {
+        let mut open = false;
+        for t in tokens {
+            if t.starts_with('<') {
+                if open {
+                    let _ = write!(out, "</{tag}>");
+                    open = false;
+                }
+                if keep_tags {
+                    out.push_str(t);
+                }
+            } else {
+                if !open && !t.trim().is_empty() {
+                    let _ = write!(out, "<{tag}>");
+                    open = true;
+                }
+                out.push_str(t);
+            }
+        }
+        if open {
+            let _ = write!(out, "</{tag}>");
+        }
+    }
+
+    /// HTML as tags, runs of whitespace and words.
+    fn tokens(html: &str) -> Vec<&str> {
+        let bytes = html.as_bytes();
+        let (mut out, mut i) = (vec![], 0);
+        while i < bytes.len() {
+            let start = i;
+            if bytes[i] == b'<' {
+                i = html[i..].find('>').map_or(bytes.len(), |j| i + j + 1);
+            } else if bytes[i].is_ascii_whitespace() {
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+            } else {
+                while i < bytes.len() && bytes[i] != b'<' && !bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+            }
+            out.push(&html[start..i]);
+        }
+        out
+    }
+
+    fn escape(text: &str) -> String {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diff(old: &str, new: &str) -> Diff {
+        Diff::pages(old, new, &Renderer::new(), &|_| None)
+    }
+
+    #[test]
+    fn the_same_page_has_no_changes() {
+        let page = "# A\n\nSome text.\n";
+        let same = diff(page, page);
+        assert_eq!(same.changes, 0);
+        assert!(same.html.contains("<p>Some text.</p>"), "{}", same.html);
+    }
+
+    #[test]
+    fn a_block_edited_shows_its_changed_words() {
+        let edited = diff(
+            "# A\n\nThe quick brown fox jumps.\n",
+            "# A\n\nThe quick red fox jumps.\n",
+        );
+        assert_eq!(edited.changes, 1);
+        assert!(
+            edited.html.contains(r#"<div class="diff-chg" id="change-1"><p>The quick <del>brown</del><ins>red</ins> fox jumps.</p>"#),
+            "{}",
+            edited.html
+        );
+    }
+
+    #[test]
+    fn blocks_added_removed_or_rewritten_are_marked_whole() {
+        let changed = diff(
+            "# A\n\nGone.\n\nKept.\n",
+            "# A\n\nKept.\n\nNew.\n\n```\ncode\n```\n",
+        );
+        assert!(
+            changed
+                .html
+                .contains(r#"<div class="diff-del" id="change-1"><p>Gone.</p>"#),
+            "{}",
+            changed.html
+        );
+        assert!(
+            changed.html.contains(r#"class="diff-ins""#) && changed.html.contains("<p>New.</p>")
+        );
+        assert!(
+            changed.html.contains(r#"<h1 data-id="a">A</h1>"#),
+            "copies of headings are not where links to them go: {}",
+            changed.html
+        );
+        let rewritten = diff("Old words here.\n", "Entirely other text.\n");
+        assert!(
+            rewritten.html.contains("diff-del") && rewritten.html.contains("diff-ins"),
+            "{}",
+            rewritten.html
+        );
+    }
+
+    #[test]
+    fn links_go_where_moved_says() {
+        let moved = Diff::pages("x\n", "See [it](dma.md).\n", &Renderer::new(), &|d| {
+            (d == "dma.md").then(|| "dma.html".to_string())
+        });
+        assert!(
+            moved.html.contains(r#"<a href="dma.html">it</a>"#),
+            "{}",
+            moved.html
+        );
+    }
+
+    #[test]
+    fn source_is_compared_line_by_line() {
+        assert_eq!(
+            Diff::lines("a\nb <\n", "a\nc\n"),
+            concat!(
+                r#"<pre class="diff-lines"><code><span class="l-same">  a</span>"#,
+                r#"<span class="l-del">- b &lt;</span><span class="l-ins">+ c</span></code></pre>"#
+            )
+        );
+    }
+}

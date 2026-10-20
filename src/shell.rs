@@ -13,8 +13,10 @@ use crate::config::LookConfig;
 use crate::git::Revision;
 use crate::nav::Nav;
 
+mod compare;
 mod history;
 
+pub use compare::{Comparison, Version};
 pub use history::{PageHistory, PageState};
 
 /// The site's style sheet, in the binary, and where it is in the site.

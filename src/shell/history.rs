@@ -69,12 +69,18 @@ impl Shell {
     fn meta(&self, at: &Path, page: &Path, history: &PageHistory) -> String {
         let mut parts = vec![];
         match history.state {
-            PageState::New => parts.push("New page, not committed yet".to_string()),
-            PageState::Edited => parts.push("Changed since the last commit".to_string()),
+            PageState::New => parts.push(format!(
+                "<a href=\"{}\">New page, not committed yet</a>",
+                self.uncommitted(at, page)
+            )),
+            PageState::Edited => parts.push(format!(
+                "<a href=\"{}\">Changed since the last commit</a>",
+                self.uncommitted(at, page)
+            )),
             PageState::Committed => {}
         }
         if let Some(last) = history.changes.first() {
-            let commit = match self.commit(&last.short, page) {
+            let commit = match self.at_commit(&last.short, page) {
                 Some(link) => format!(
                     "<a href=\"{link}\" title=\"{}\">{}</a>",
                     Self::escape(&last.summary),
@@ -96,8 +102,9 @@ impl Shell {
                 Links::Built => format!("on {}", last.date()),
             };
             parts.push(format!(
-                "Last changed {when} by {} in {commit}",
-                Self::escape(&last.author)
+                "Last changed {when} by {} in {commit} (<a href=\"{}\">changes</a>)",
+                Self::escape(&last.author),
+                self.changes(at, &last.short, page)
             ));
         }
         if self.links == Links::Served && !history.changes.is_empty() {
@@ -125,7 +132,8 @@ impl Shell {
             };
             let _ = write!(
                 rows,
-                "<li class=\"pending\"><b>Not committed yet</b> <small>{said}</small></li>"
+                "<li class=\"pending\"><a href=\"{}\"><b>Not committed yet</b></a> <small>{said}</small></li>",
+                self.uncommitted(at, page)
             );
         }
         for change in &history.changes {
@@ -134,15 +142,16 @@ impl Shell {
                 change.short,
                 Self::escape(&change.summary)
             );
-            let said = match self.commit(&change.short, page) {
+            let said = match self.at_commit(&change.short, page) {
                 Some(href) => format!("<a href=\"{href}\">{said}</a>"),
                 None => said,
             };
             let _ = write!(
                 rows,
-                "<li>{said} <small>{} · {}</small></li>",
+                "<li>{said} <small>{} · {} · <a href=\"{}\">changes</a></small></li>",
                 Self::escape(&change.author),
-                change.date()
+                change.date(),
+                self.changes(at, &change.short, page)
             );
         }
         if rows.is_empty() {
@@ -175,7 +184,7 @@ impl Shell {
                 .iter()
                 .map(|page| {
                     let name = Self::escape(&page.to_string_lossy());
-                    match self.commit(&change.short, page) {
+                    match self.at_commit(&change.short, page) {
                         Some(link) => format!("<a href=\"{link}\">{name}</a>"),
                         None => name,
                     }
@@ -197,7 +206,8 @@ impl Shell {
 
     /// A link to a page as it was at a commit: served only, as a built site has its branches and tags, and no
     /// other commits.
-    fn commit(&self, short: &str, page: &Path) -> Option<String> {
+    #[must_use]
+    pub fn at_commit(&self, short: &str, page: &Path) -> Option<String> {
         (self.links == Links::Served).then(|| {
             format!(
                 "/ref/{}/{}",
