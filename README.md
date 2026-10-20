@@ -9,7 +9,7 @@
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 
-git-kb shows a folder of Markdown in a git repository as a site to read. Pages link to each other as they are written, folders are listed or shown by their `index.md` or `README.md`, and every page has a sidebar of its headings and the site's pages. It serves the site while you write, and pages reload as you save. It also builds the site as a static folder of HTML that you can open from disk or put on any host, such as GitHub Pages.
+git-kb shows a folder of Markdown in a git repository as a site to read. Pages link to each other as they are written, folders are listed or shown by their `index.md` or `README.md`, and every page has a sidebar of its headings and the site's pages. It serves the site while you write, and open pages update as you save, where you are on them. It also builds the site as a static folder of HTML that you can open from disk or put on any host, such as GitHub Pages.
 
 ## Installing
 

@@ -830,7 +830,7 @@ mod tests {
             "its links stay at the commit: {first}"
         );
         assert!(
-            !first.contains("EventSource"),
+            !first.contains("live.js"),
             "a commit does not change: {first}"
         );
         assert_eq!(

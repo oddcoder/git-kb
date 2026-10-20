@@ -43,13 +43,18 @@ pub const SEARCH_PATH: &str = "_assets/search.js";
 pub const GRAPH: &str = include_str!(concat!(env!("OUT_DIR"), "/graph.js"));
 pub const GRAPH_PATH: &str = "_assets/graph.js";
 
+/// The script that keeps a served page live, compiled from `web/src/live.ts`, and where it is in the site.
+pub const LIVE: &str = include_str!(concat!(env!("OUT_DIR"), "/live.js"));
+pub const LIVE_PATH: &str = "_assets/live.js";
+
 /// The files every page uses, by their paths in the site.
-pub const ASSETS: [(&str, &str); 5] = [
+pub const ASSETS: [(&str, &str); 6] = [
     (STYLE_PATH, STYLE),
     (LOOK_PATH, LOOK),
     (LAYOUT_PATH, LAYOUT),
     (SEARCH_PATH, SEARCH),
     (GRAPH_PATH, GRAPH),
+    (LIVE_PATH, LIVE),
 ];
 
 /// How a site's pages link to the rest of it.
@@ -83,13 +88,6 @@ pub struct Shell {
 }
 
 impl Shell {
-    /// What makes a served page load again when the site changes, once a burst of changes, as a save that
-    /// writes twice, has settled. A built site has no server to tell it.
-    const LIVE: &str = concat!(
-        "<script>new EventSource(\"/_events\").onmessage = () => ",
-        "{ clearTimeout(window.kbReload); window.kbReload = setTimeout(() => location.reload(), 100); };</script>\n"
-    );
-
     #[must_use]
     pub fn new(name: String, links: Links) -> Self {
         Self {
@@ -187,8 +185,8 @@ impl Shell {
             ),
             // A commit does not change; nor does a page of it.
             live = match (self.links, &self.revision) {
-                (Links::Served, None) => Self::LIVE,
-                _ => "",
+                (Links::Served, None) => format!("<script src=\"/{LIVE_PATH}\" defer></script>\n"),
+                _ => String::new(),
             },
             revision = self.badge(at),
             revisions = self.revisions_link(at),
@@ -707,16 +705,16 @@ mod tests {
     }
 
     #[test]
-    fn served_pages_load_again_when_the_site_changes_and_built_ones_do_not() {
+    fn served_pages_keep_live_and_built_ones_do_not() {
         let served =
             Shell::new("docs".into(), Links::Served).page(Path::new(""), "", "A", "", &Nav::none());
         assert!(
-            served.contains(r#"new EventSource("/_events")"#),
+            served.contains(r#"<script src="/_assets/live.js" defer></script>"#),
             "{served}"
         );
         let built =
             Shell::new("docs".into(), Links::Built).page(Path::new(""), "", "A", "", &Nav::none());
-        assert!(!built.contains("EventSource"), "{built}");
+        assert!(!built.contains("live.js"), "{built}");
     }
 
     #[test]

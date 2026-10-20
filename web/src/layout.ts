@@ -56,7 +56,8 @@ function draggable<S extends object>(edge: HTMLElement, { begin, move, done, res
   edge.addEventListener('dblclick', reset);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+// The edges, hooked when the page is ready, and again when live.ts swaps in a fresh copy of it, with edges of its own.
+function hook(): void {
   const column = $('.page');
   const room = () => column?.parentElement?.getBoundingClientRect().width ?? innerWidth;
   const columnBox = () => column?.getBoundingClientRect() ?? new DOMRect();
@@ -118,7 +119,9 @@ document.addEventListener('DOMContentLoaded', () => {
       reset: centre,
     });
   }
-});
+}
+document.addEventListener('DOMContentLoaded', hook);
+document.addEventListener('kb-refresh', hook);
 
 // A card resized by its corner, as a block's card in the margin, keeps that size: it opens at it next time.
 const SIZE = 'git-kb-card-size';
