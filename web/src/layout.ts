@@ -58,10 +58,19 @@ function draggable<S extends object>(edge: HTMLElement, { begin, move, done, res
 
 // The edges, hooked when the page is ready, and again when live.ts swaps in a fresh copy of it, with edges of its own.
 function hook(): void {
-  const column = $('.page');
-  const room = () => column?.parentElement?.getBoundingClientRect().width ?? innerWidth;
+  const column = $('main.page');
   const columnBox = () => column?.getBoundingClientRect() ?? new DOMRect();
-  const offsetInRoom = () => columnBox().left - (column?.parentElement?.getBoundingClientRect().left ?? 0);
+  // The text's own column of the layout: from the sidebar's right, or the layout's left when it is closed, to the
+  // layout's right.
+  const cell = () => {
+    const layout = column?.parentElement?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth);
+    const side = $('.side');
+    const open = side && getComputedStyle(side).display !== 'none';
+    const left = open ? side.getBoundingClientRect().right : layout.left;
+    return { left, width: layout.right - left };
+  };
+  const room = () => cell().width;
+  const offsetInRoom = () => columnBox().left - cell().left;
 
   // The sidebar: dragged narrower than SIDE.close it closes, leaving its edge at the left to drag it open again.
   const side = $('.edge-side');
