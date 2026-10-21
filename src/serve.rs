@@ -398,23 +398,7 @@ impl View<'_> {
             return self.folder(at);
         }
         if let Some(file) = files.iter().find(|f| f.as_path() == at) {
-            // A page's Markdown, as it is.
-            if query == Some("raw") && Server::is_markdown(file) {
-                return match self.read(file) {
-                    Ok(bytes) => ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes)
-                        .into_response(),
-                    Err(e) => self.server.failed(&e),
-                };
-            }
-            if query == Some("history") && Server::is_markdown(file) {
-                return self.history(file);
-            }
-            if let Some(from) = query.and_then(|q| q.strip_prefix("diff="))
-                && Server::is_markdown(file)
-            {
-                return self.compare(file, &percent_decode_str(from).decode_utf8_lossy());
-            }
-            return self.file(file);
+            return self.asked(file, query);
         }
         // A built site's page, a.html, is its Markdown's, a.md, whatever the case of the letters; and a
         // folder's index.html is the folder.
@@ -430,10 +414,35 @@ impl View<'_> {
                     && f.file_stem().is_some_and(|s| s.eq_ignore_ascii_case(name))
             });
             if let Some(file) = page {
-                return self.file(file);
+                return self.asked(file, query);
             }
         }
         self.not_found(path)
+    }
+
+    /// A file of the site, as its query asks, at its own path or a built site's: a page's Markdown, as it is, for
+    /// `?raw`; its history, for `?history`; it compared, for `?diff=rev`, with itself as shown, or at `to=rev`;
+    /// or else the file itself.
+    fn asked(&self, file: &Path, query: Option<&str>) -> Response {
+        let query = query.unwrap_or("");
+        if !Server::is_markdown(file) {
+            return self.file(file);
+        }
+        if query == "raw" {
+            return match self.read(file) {
+                Ok(bytes) => {
+                    ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response()
+                }
+                Err(e) => self.server.failed(&e),
+            };
+        }
+        if query == "history" {
+            return self.history(file);
+        }
+        if let Some(from) = Server::param(query, "diff") {
+            return self.compare(file, &from, Server::param(query, "to").as_deref());
+        }
+        self.file(file)
     }
 
     /// A file of the site, as it is on disk or was at the commit.
@@ -555,8 +564,8 @@ impl View<'_> {
         Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
     }
 
-    /// A page compared: as it was at the commit `from` names, with it as shown.
-    fn compare(&self, file: &Path, from: &str) -> Response {
+    /// A page compared: as it was at the commit `from` names, with it at the one `to` names, or as shown.
+    fn compare(&self, file: &Path, from: &str, to: Option<&str>) -> Response {
         let Some(repo) = &self.server.repo else {
             return self.server.missing(&format!(
                 "{} is not in a git repository",
@@ -564,6 +573,12 @@ impl View<'_> {
             ));
         };
         let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+        // Before the first commit, there is no page to link to.
+        let before = repo
+            .snapshot(from)
+            .is_ok()
+            .then(|| self.shell.at_commit(from, file))
+            .flatten();
         let old = match repo.snapshot(from) {
             // A page not at the commit was added since.
             Ok(at) => repo.read(&at, file).map(text).unwrap_or_default(),
@@ -577,28 +592,42 @@ impl View<'_> {
             }
             Err(e) => return self.server.missing(&format!("{e:#}")),
         };
-        let new = match self.read(file) {
-            Ok(bytes) => text(bytes),
-            Err(e) => return self.server.failed(&e),
+        let new = match to {
+            // A page not at the commit was removed by then.
+            Some(to) => match repo.snapshot(to) {
+                Ok(at) => repo.read(&at, file).map(text).unwrap_or_default(),
+                Err(e) => return self.server.missing(&format!("{e:#}")),
+            },
+            None => match self.read(file) {
+                Ok(bytes) => text(bytes),
+                Err(e) => return self.server.failed(&e),
+            },
         };
         let renderer = &self.server.renderer;
         let title = renderer.title(&new).unwrap_or_else(|| Server::stem(file));
         let at = file.parent().unwrap_or(Path::new(""));
         let diff = Diff::pages(&old, &new, renderer, &|_| None);
-        let to = match &self.snapshot {
-            Some(snapshot) => snapshot.revision.name.clone(),
-            None => "the working copy".into(),
+        let then = match (to, &self.snapshot) {
+            (Some(to), _) => Version {
+                label: to.to_owned(),
+                href: self.shell.at_commit(to, file),
+            },
+            (None, Some(snapshot)) => Version {
+                label: snapshot.revision.name.clone(),
+                href: Some(self.shell.link(at, file)),
+            },
+            (None, None) => Version {
+                label: "the working copy".into(),
+                href: Some(self.shell.link(at, file)),
+            },
         };
         let comparison = Comparison {
             title: &title,
             from: Version {
                 label: from.to_owned(),
-                href: self.shell.at_commit(from, file),
+                href: before,
             },
-            to: Version {
-                label: to,
-                href: Some(self.shell.link(at, file)),
-            },
+            to: then,
             diff: &diff,
             before: renderer.render(&old).html,
             after: renderer.render(&new).html,
@@ -985,6 +1014,43 @@ mod tests {
             site.get("/docs/a.md?diff=nope").await.0,
             StatusCode::NOT_FOUND
         );
+        let html = site.get("/ref/main/a.html?diff=main^").await.2;
+        assert!(
+            html.contains("<del>brown</del><ins>red</ins>"),
+            "a built page's address asks too: {html}"
+        );
+        assert!(
+            site.get("/docs/a.html?history")
+                .await
+                .2
+                .contains("History of A")
+        );
+        assert_eq!(
+            site.get("/docs/a.html?raw").await.1,
+            "text/plain; charset=utf-8"
+        );
+        let page = site.get("/docs/a.md").await.2;
+        let link = page
+            .split("(<a href=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap()
+            .replace("&amp;", "&");
+        assert!(page.contains("%5E&amp;to="), "{page}");
+        assert!(
+            link.starts_with("/docs/a.html?diff="),
+            "the site stays as it is: {link}"
+        );
+        let changes = site.get(&link).await.2;
+        assert!(
+            changes.contains("<del>brown</del><ins>red</ins>"),
+            "{changes}"
+        );
+        assert!(
+            changes.contains(r#"<div class="diff-ins" id="change-2"><p>More.</p>"#),
+            "the commit's changes, which added More., not the working copy's, which took it out: {changes}"
+        );
+        assert!(!changes.contains(r#"class="revision""#), "{changes}");
     }
 
     #[tokio::test]
