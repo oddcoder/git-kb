@@ -69,15 +69,16 @@ impl Shell {
         )
     }
 
-    /// A link, from a page in the folder `at`, to what a commit changed in a page: served, the page at the
-    /// commit compared with it at the commit before; built, the page of that comparison beside it.
+    /// A link, from a page in the folder `at`, to what a commit changed in a page: served, the page, as it is shown,
+    /// asked for it at the commit compared with it at the commit before; built, that comparison's page beside it.
     #[must_use]
     pub fn changes(&self, at: &Path, short: &str, page: &Path) -> String {
         match self.links {
+            // On the page as it is shown, so that the site stays as it is.
             Links::Served => format!(
-                "/ref/{}/{}?diff={}%5E",
+                "{}?diff={}%5E&amp;to={}",
+                self.to(at, &Self::encode(&page.with_extension("html"))),
                 Self::encode_part(short),
-                Self::encode(&page.with_extension("html")),
                 Self::encode_part(short)
             ),
             Links::Built => self.to(at, &Self::encode(&Self::compared(page, short))),
