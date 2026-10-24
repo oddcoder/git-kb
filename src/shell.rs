@@ -487,6 +487,12 @@ impl Shell {
     }
 
     /// A path as a link: each of its parts with what a URL does not hold as itself as %XX.
+    /// A thread's id, as part of an address: `#t-<id>`.
+    #[must_use]
+    pub fn encode_id(id: &str) -> String {
+        Self::encode_part(id)
+    }
+
     fn encode(path: &Path) -> String {
         path.components()
             .map(|part| Self::encode_part(&part.as_os_str().to_string_lossy()))

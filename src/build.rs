@@ -429,7 +429,7 @@ impl Builder {
             .on_page(path, past.at.revision.id, markdown, &self.renderer)
             .inspect_err(|e| warn!(page = %path.display(), "comments not read: {e:#}"))
             .ok()?;
-        Some(Notes::new(on, markdown, render)).filter(|notes| !notes.is_empty())
+        Some(Notes::new(path, on, markdown, render)).filter(|notes| !notes.is_empty())
     }
 
     /// A page rendered with each block marked in its margin with when it last changed.
@@ -1488,6 +1488,10 @@ mod tests {
             assert!(
                 html.contains(r#"See <a href="b.html">b</a>."#),
                 "a comment's links go where the page's do: {html}"
+            );
+            assert!(
+                !html.contains("action=\"/_comments/") && !html.contains("cmt add"),
+                "a built site has nothing to write in: {html}"
             );
         }
     }

@@ -25,11 +25,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use percent_encoding::percent_decode_str;
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch};
@@ -38,7 +39,7 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::{debug, error, info, warn};
 
 use crate::build::{Builder, Folder};
-use crate::comments::Store;
+use crate::comments::{Begin, Snippet, Store};
 use crate::config::{CommentsConfig, LookConfig};
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
@@ -156,6 +157,21 @@ impl Server {
                 "/_events",
                 get(|State(server): State<Arc<Self>>| async move { server.events() }),
             )
+            .route(
+                "/_comments/{action}",
+                post(
+                    |State(server): State<Arc<Self>>,
+                     axum::extract::Path(action): axum::extract::Path<String>,
+                     headers: HeaderMap,
+                     form: Bytes| async move {
+                        tokio::task::spawn_blocking(move || {
+                            server.comment(&action, &headers, &form)
+                        })
+                        .await
+                        .unwrap_or_else(|e| Self::broke(&e.into()))
+                    },
+                ),
+            )
             .fallback(|State(server): State<Arc<Self>>, uri: Uri| async move {
                 let (path, query) = (uri.path().to_owned(), uri.query().map(str::to_owned));
                 tokio::task::spawn_blocking(move || server.answer(&path, query.as_deref()))
@@ -223,6 +239,108 @@ impl Server {
             Ok(view) => view.answer(decoded.trim_start_matches('/'), path, query),
             Err(e) => self.failed(&e),
         }
+    }
+
+    /// A comment written from a page's form: a thread begun, replied to, resolved or reopened; and then back to
+    /// the page, at the thread. Only the site's own pages may write: a browser sent here from another site says
+    /// so, and is refused.
+    fn comment(&self, action: &str, headers: &HeaderMap, form: &[u8]) -> Response {
+        let form = String::from_utf8_lossy(form);
+        let field = |name| Self::param(&form, name).unwrap_or_default();
+        if !Self::same_site(headers) {
+            return (
+                StatusCode::FORBIDDEN,
+                "Comments are written only from this site's pages",
+            )
+                .into_response();
+        }
+        let Some(store) = &self.comments else {
+            return (
+                StatusCode::BAD_REQUEST,
+                "The site is not in a git repository",
+            )
+                .into_response();
+        };
+        let done = match action {
+            "new" => self.begin(store, &field("page"), &field("lines"), &field("body")),
+            "reply" => store
+                .reply(&field("id"), &field("body"))
+                .map(|()| field("id")),
+            "resolve" => store
+                .resolve(&field("id"), field("resolved") == "1")
+                .map(|()| field("id")),
+            _ => return self.missing("No such way to comment."),
+        };
+        match done {
+            Ok(id) => {
+                let back = Self::back(&field("back"));
+                Redirect::to(&format!("{back}#t-{}", shell::Shell::encode_id(&id))).into_response()
+            }
+            Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        }
+    }
+
+    /// Begins a thread on lines of a page as it is on disk, as of the last commit, and gives its id.
+    fn begin(&self, store: &Store, page: &str, lines: &str, body: &str) -> anyhow::Result<String> {
+        let page = Path::new(page);
+        let files = Builder::files(&self.root, None)?;
+        anyhow::ensure!(
+            Self::is_markdown(page) && files.iter().any(|f| f == page),
+            "there is no page {}",
+            page.display()
+        );
+        let lines = Self::lines(lines).ok_or_else(|| anyhow!("which lines? {lines:?}"))?;
+        let head = self
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.snapshot("HEAD").ok())
+            .ok_or_else(|| anyhow!("comments begin on a commit: commit the page first"))?;
+        let text = std::fs::read_to_string(self.root.join(page))?;
+        let begin = Begin {
+            page,
+            commit: head.revision.id,
+            text: &text,
+            lines,
+            snippet: Snippet::default(),
+        };
+        store.begin(&begin, body)
+    }
+
+    /// Whether a request is from the site's own pages: so a browser says, when it says where a request is from,
+    /// by `Sec-Fetch-Site`, or else by `Origin`. A request that says neither is not a browser's, sent from
+    /// another site.
+    fn same_site(headers: &HeaderMap) -> bool {
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        if let Some(site) = header("sec-fetch-site") {
+            return matches!(site, "same-origin" | "none");
+        }
+        match (header("origin"), header("host")) {
+            (Some(origin), Some(host)) => {
+                origin.split_once("://").is_some_and(|(_, at)| at == host)
+            }
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    }
+
+    /// Where a form goes back to: a page of the site, never anywhere else.
+    fn back(asked: &str) -> String {
+        let safe = asked.starts_with("/docs/")
+            && !asked.contains("//")
+            && !asked.contains('\\')
+            && !asked.contains(['\r', '\n']);
+        if safe {
+            asked.to_string()
+        } else {
+            "/docs/".into()
+        }
+    }
+
+    /// Lines, as `4-5`: from 0, the last not among them.
+    fn lines(asked: &str) -> Option<std::ops::Range<usize>> {
+        let (start, end) = asked.split_once('-')?;
+        let (start, end) = (start.parse().ok()?, end.parse().ok()?);
+        (start < end).then_some(start..end)
     }
 
     /// A query's value, by its name, decoded.
@@ -460,7 +578,8 @@ impl View<'_> {
         if let Some(from) = Server::param(query, "diff") {
             return self.compare(file, &from, Server::param(query, "to").as_deref());
         }
-        self.file(file)
+        let composing = Server::param(query, "comment").and_then(|lines| Server::lines(&lines));
+        self.page(file, composing)
     }
 
     /// A file of the site, as it is on disk or was at the commit.
@@ -511,6 +630,11 @@ impl View<'_> {
 
     /// A file of the site: a page, rendered, or any other file, as it is.
     fn file(&self, file: &Path) -> Response {
+        self.page(file, None)
+    }
+
+    /// The same, for a page with a box open in its column to begin a thread on some of its lines.
+    fn page(&self, file: &Path, composing: Option<std::ops::Range<usize>>) -> Response {
         let bytes = match self.read(file) {
             Ok(bytes) => bytes,
             Err(e) => return self.server.failed(&e),
@@ -521,7 +645,9 @@ impl View<'_> {
         }
         let text = String::from_utf8_lossy(&bytes);
         let render = |body: &str| self.server.renderer.render_safe(body, &|_| None).html;
-        let notes = self.notes(file, &text, &render);
+        let notes = self
+            .notes(file, &text, &render)
+            .map(|notes| notes.composing(composing));
         let page = self.render(file, &text, &bytes, notes.as_ref());
         let title = page.title.unwrap_or_else(|| Server::stem(file));
         let at = file.parent().unwrap_or(Path::new(""));
@@ -561,7 +687,9 @@ impl View<'_> {
             .on_page(file, at.revision.id, text, &self.server.renderer)
             .inspect_err(|e| warn!(page = %file.display(), "comments not read: {e:#}"))
             .ok()?;
-        Some(Notes::new(on, text, render)).filter(|notes| !notes.is_empty())
+        // On the folder as it is, comments are written, so the column is there even with none yet.
+        Some(Notes::new(file, on, text, render))
+            .filter(|notes| self.snapshot.is_none() || !notes.is_empty())
     }
 
     /// A page rendered, each block marked in its margin with when it last changed, when git knows, and with its
@@ -758,6 +886,26 @@ mod tests {
                 docs: dir.path().join("docs"),
                 _made: Some(dir),
             }
+        }
+
+        /// The status, and where it redirects or else its body, of the answer to a form posted, from a page
+        /// whose browser says it is `from`, as `same-origin` or `cross-site`.
+        async fn post(&self, path: &str, from: &str, form: &str) -> (StatusCode, String) {
+            let router = Arc::new(Server::new(self.docs.clone(), None)).router();
+            let request = Request::post(path)
+                .header("sec-fetch-site", from)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(form.to_owned()))
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let location = response
+                .headers()
+                .get(header::LOCATION)
+                .map(|v| v.to_str().unwrap().to_owned());
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let said = location.unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
+            (status, said)
         }
 
         /// The status, content type, and body or else where it redirects, of the answer to a request.
@@ -1429,20 +1577,178 @@ mod tests {
             .expect("a marker");
         assert!(
             body[marker..].starts_with(r##"<a class="cmt" href="#t-"##)
-                && body[marker..].contains("title=\"1 open thread\">💬 1</a>\n<p>Two.</p>"),
+                && body[marker..].contains(
+                    "title=\"1 open thread\">💬 1</a><a class=\"cmt add\" href=\"?comment=4-5#composer\""
+                ),
             "the marker is on the paragraph the thread is on: {body}"
         );
     }
 
     #[tokio::test]
-    async fn a_page_without_comments_has_no_column() {
+    async fn a_page_without_comments_has_a_column_only_where_they_are_written() {
         let git = commented("On a.md");
         git.write("docs/b.md", "# B\n");
         git.commit("Another page");
-        let body = Site::of(git.top().join("docs")).get("/docs/b.html").await.2;
+        let site = Site::of(git.top().join("docs"));
+        let now = site.get("/docs/b.html").await.2;
         assert!(
-            !body.contains("has-rail") && !body.contains("class=\"rail\""),
-            "{body}"
+            now.contains("Press + beside a paragraph to begin one."),
+            "{now}"
+        );
+        let then = site.get("/ref/main/b.html").await.2;
+        assert!(
+            !then.contains("has-rail") && !then.contains("class=\"rail\""),
+            "{then}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thread_is_begun_from_its_page() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        let composing = site.get("/docs/a.html?comment=2-3").await.2;
+        assert!(composing.contains(r#"<form class="composer thread" id="composer" method="post" action="/_comments/new">"#), "{composing}");
+        assert!(
+            composing.contains("<blockquote class=\"on\">One.</blockquote>"),
+            "{composing}"
+        );
+        let (status, back) = site
+            .post(
+                "/_comments/new",
+                "same-origin",
+                "page=a.md&lines=2-3&back=%2Fdocs%2Fa.html&body=About+**one**",
+            )
+            .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{back}");
+        assert!(back.starts_with("/docs/a.html#t-"), "{back}");
+        let page = site.get("/docs/a.html").await.2;
+        assert!(page.contains("About <strong>one</strong>"), "{page}");
+        assert!(
+            page.contains("💬 1</a><a class=\"cmt add\" href=\"?comment=2-3#composer\""),
+            "{page}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thread_is_replied_to_resolved_and_reopened_from_its_page() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        let page = site.get("/docs/a.html").await.2;
+        let id = page
+            .split("name=\"id\" value=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .to_owned();
+        let (status, back) = site
+            .post(
+                "/_comments/reply",
+                "same-origin",
+                &format!("id={id}&back=%2Fdocs%2Fa.html&body=A+reply"),
+            )
+            .await;
+        assert_eq!(
+            (status, back.as_str()),
+            (
+                StatusCode::SEE_OTHER,
+                format!("/docs/a.html#t-{id}").as_str()
+            )
+        );
+        assert!(
+            site.get("/docs/a.html")
+                .await
+                .2
+                .contains("Ada · 2 comments")
+        );
+        site.post(
+            "/_comments/resolve",
+            "same-origin",
+            &format!("id={id}&resolved=1"),
+        )
+        .await;
+        let resolved = site.get("/docs/a.html").await.2;
+        assert!(resolved.contains("class=\"thread resolved\""), "{resolved}");
+        assert!(resolved.contains(">Reopen</button>"), "{resolved}");
+        site.post(
+            "/_comments/resolve",
+            "same-origin",
+            &format!("id={id}&resolved=0"),
+        )
+        .await;
+        assert!(
+            site.get("/docs/a.html")
+                .await
+                .2
+                .contains(">Resolve</button>")
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_site_s_own_pages_write_comments() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        for from in ["cross-site", "same-site"] {
+            let (status, _) = site
+                .post("/_comments/new", from, "page=a.md&lines=2-3&body=Sneaky")
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{from}");
+        }
+        assert!(!site.get("/docs/a.html").await.2.contains("Sneaky"));
+    }
+
+    #[tokio::test]
+    async fn a_comment_is_refused_on_what_is_not_a_page_of_the_site() {
+        let git = commented("First");
+        git.write("secret.md", "# Not in docs\n");
+        let site = Site::of(git.top().join("docs"));
+        for page in ["..%2Fsecret.md", "nope.md", "a.md"] {
+            let lines = if page == "a.md" { "5-2" } else { "0-1" };
+            let (status, said) = site
+                .post(
+                    "/_comments/new",
+                    "same-origin",
+                    &format!("page={page}&lines={lines}&body=Hi"),
+                )
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{page}: {said}");
+        }
+        let (status, _) = site
+            .post("/_comments/reply", "same-origin", "id=nope&body=Hi")
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_form_goes_back_only_to_a_page_of_the_site() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        for back in [
+            "https%3A%2F%2Fevil.example%2F",
+            "%2F%2Fevil.example%2F",
+            "%2Fdocs%2F%2Fevil",
+        ] {
+            let (_, location) = site
+                .post(
+                    "/_comments/new",
+                    "same-origin",
+                    &format!("page=a.md&lines=2-3&body=Hi&back={back}"),
+                )
+                .await;
+            assert!(location.starts_with("/docs/#t-"), "{back}: {location}");
+        }
+    }
+
+    #[tokio::test]
+    async fn at_a_commit_comments_are_only_shown() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        let at = site.get("/ref/main/a.html").await.2;
+        assert!(at.contains("First"), "{at}");
+        assert!(
+            !at.contains("action=\"/_comments/") && !at.contains("cmt add"),
+            "{at}"
         );
     }
 }
