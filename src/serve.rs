@@ -59,6 +59,8 @@ pub struct Server {
     repo: Option<Repo>,
     /// The review comments kept in it.
     comments: Option<Store>,
+    /// Minutes between syncs of the comments with every remote; 0 for never.
+    sync_every: u64,
     /// The site's changes, told to open pages.
     changes: broadcast::Sender<()>,
     /// Whether it is stopping, told to open pages' event streams, which would otherwise never end.
@@ -90,6 +92,7 @@ impl Server {
         Self {
             repo,
             comments,
+            sync_every: 0,
             root,
             renderer: Renderer::new(),
             shell,
@@ -106,6 +109,12 @@ impl Server {
             .as_ref()
             .map(|repo| Store::new(repo, &config.namespace));
         Self { comments, ..self }
+    }
+
+    /// The same, syncing the comments with every remote every so many minutes, and at once; 0 for never.
+    #[must_use]
+    pub fn syncing(self, sync_every: u64) -> Self {
+        Self { sync_every, ..self }
     }
 
     /// The same, serving pages in a look of their own.
@@ -137,7 +146,20 @@ impl Server {
             .inspect_err(|e| warn!("not watching for changes: {e:#}"))
             .ok();
         let stopping = self.stopping.clone();
-        axum::serve(listener, Arc::new(self).router())
+        let server = Arc::new(self);
+        if server.comments.is_some() && server.sync_every > 0 {
+            let syncer = Arc::clone(&server);
+            let every = std::time::Duration::from_secs(60 * server.sync_every);
+            tokio::spawn(async move {
+                let mut ticks = tokio::time::interval(every);
+                loop {
+                    ticks.tick().await;
+                    let server = Arc::clone(&syncer);
+                    let _ = tokio::task::spawn_blocking(move || server.sync()).await;
+                }
+            });
+        }
+        axum::serve(listener, server.router())
             .with_graceful_shutdown(async move {
                 shutdown.await;
                 info!("stopping");
@@ -262,6 +284,10 @@ impl Server {
                 .into_response();
         };
         let done = match action {
+            "sync" => {
+                self.sync();
+                Ok(String::new())
+            }
             "new" => self.begin(store, &field("page"), &field("lines"), &field("body")),
             "reply" => store
                 .reply(&field("id"), &field("body"))
@@ -274,9 +300,28 @@ impl Server {
         match done {
             Ok(id) => {
                 let back = Self::back(&field("back"));
-                Redirect::to(&format!("{back}#t-{}", shell::Shell::encode_id(&id))).into_response()
+                let at = if id.is_empty() {
+                    String::new()
+                } else {
+                    format!("#t-{}", shell::Shell::encode_id(&id))
+                };
+                Redirect::to(&format!("{back}{at}")).into_response()
             }
             Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        }
+    }
+
+    /// Syncs the comments with every remote, and, when that brought any, tells open pages to load again.
+    fn sync(&self) {
+        let Some(store) = &self.comments else { return };
+        match store.sync() {
+            Ok(synced) => {
+                info!(said = synced.said, "comments synced");
+                if synced.brought > 0 {
+                    let _ = self.changes.send(());
+                }
+            }
+            Err(e) => warn!("comments not synced: {e:#}"),
         }
     }
 
@@ -688,7 +733,7 @@ impl View<'_> {
             .inspect_err(|e| warn!(page = %file.display(), "comments not read: {e:#}"))
             .ok()?;
         // On the folder as it is, comments are written, so the column is there even with none yet.
-        Some(Notes::new(file, on, text, render))
+        Some(Notes::new(file, on, text, render).synced(store.last_sync()))
             .filter(|notes| self.snapshot.is_none() || !notes.is_empty())
     }
 
@@ -1750,5 +1795,20 @@ mod tests {
             !at.contains("action=\"/_comments/") && !at.contains("cmt add"),
             "{at}"
         );
+    }
+
+    #[tokio::test]
+    async fn sync_is_asked_for_from_the_page_and_goes_back_to_it() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        let (status, back) = site
+            .post("/_comments/sync", "same-origin", "back=%2Fdocs%2Fa.html")
+            .await;
+        assert_eq!(
+            (status, back.as_str()),
+            (StatusCode::SEE_OTHER, "/docs/a.html")
+        );
+        let (status, _) = site.post("/_comments/sync", "cross-site", "").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
     }
 }

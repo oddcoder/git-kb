@@ -55,6 +55,7 @@ fn main() -> ExitCode {
                         Server::new(config.root.clone(), config.title.clone())
                             .looking(config.look.clone())
                             .commenting(&config.comments)
+                            .syncing(config.serve.sync_every)
                             .run(address, async {
                                 tokio::signal::ctrl_c().await.unwrap_or(());
                                 tokio::spawn(async {

@@ -13,6 +13,7 @@
 //! [serve]
 //! host = "127.0.0.1"     # the address to listen on; only this machine by default
 //! port = 8000
+//! sync-every = 5         # minutes between syncs of the comments with every remote; 0 for never
 //!
 //! [build]
 //! out = "target/git-kb"  # where the site is written
@@ -91,6 +92,9 @@ impl Default for CommentsConfig {
 pub struct ServeConfig {
     pub host: IpAddr,
     pub port: u16,
+    /// Minutes between syncs of the review comments with every remote; 0 for never.
+    #[serde(rename = "sync-every")]
+    pub sync_every: u64,
 }
 
 impl Default for ServeConfig {
@@ -98,6 +102,7 @@ impl Default for ServeConfig {
         Self {
             host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 8000,
+            sync_every: 5,
         }
     }
 }
@@ -253,7 +258,8 @@ mod tests {
             config.serve,
             ServeConfig {
                 host: [127, 0, 0, 1].into(),
-                port: 8000
+                port: 8000,
+                ..ServeConfig::default()
             }
         );
         assert_eq!(config.build.out, tree.path("docs/target/git-kb"));
@@ -271,7 +277,8 @@ mod tests {
             config.serve,
             ServeConfig {
                 host: [0, 0, 0, 0].into(),
-                port: 9000
+                port: 9000,
+                ..ServeConfig::default()
             }
         );
         assert_eq!(config.build.out, tree.path("site"));
@@ -285,7 +292,8 @@ mod tests {
             config.serve,
             ServeConfig {
                 host: [127, 0, 0, 1].into(),
-                port: 9000
+                port: 9000,
+                ..ServeConfig::default()
             }
         );
         assert_eq!(config.build.out, tree.path("target/git-kb"));

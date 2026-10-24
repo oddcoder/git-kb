@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use super::{Links, Shell};
-use crate::comments::{Located, OnPage, State, Thread};
+use crate::comments::{Located, OnPage, State, Synced, Thread};
 use crate::git::When;
 use crate::render::Mark;
 
@@ -23,6 +23,8 @@ pub struct Notes<'a> {
     /// The page's text, and the lines a new thread is being begun on, if one is.
     text: String,
     composing: Option<Range<usize>>,
+    /// What the last sync of the comments did, if there has been one.
+    synced: Option<Synced>,
     /// Where each of the page's lines starts.
     starts: Vec<usize>,
     render: &'a dyn Fn(&str) -> String,
@@ -42,6 +44,7 @@ impl<'a> Notes<'a> {
             on,
             text: text.to_string(),
             composing: None,
+            synced: None,
             starts,
             render,
             now: When::now().0,
@@ -55,6 +58,12 @@ impl<'a> Notes<'a> {
             composing: lines,
             ..self
         }
+    }
+
+    /// The same, saying what the last sync did.
+    #[must_use]
+    pub fn synced(self, synced: Option<Synced>) -> Self {
+        Self { synced, ..self }
     }
 
     /// Whether the page has any threads to show, found on it or not.
@@ -186,8 +195,36 @@ impl Shell {
             _ => "",
         };
         let composer = self.composer(notes);
+        let sync = self.sync_form(notes);
         format!(
-            "<aside class=\"rail\" aria-label=\"Comments\"><div class=\"rail-head\"><h2>Comments</h2>{show}</div>{composer}{empty}{cards}</aside>\n"
+            "<aside class=\"rail\" aria-label=\"Comments\"><div class=\"rail-head\"><h2>Comments</h2>{show}</div>{sync}{composer}{empty}{cards}</aside>\n"
+        )
+    }
+
+    /// Where comments are written, a button to sync them with every remote now, and what the last sync did.
+    fn sync_form(&self, notes: &Notes) -> String {
+        if !self.writes() {
+            return String::new();
+        }
+        let last = notes.synced.as_ref().map_or_else(
+            || "Not synced yet".to_string(),
+            |s| {
+                format!(
+                    "Synced {}: {}",
+                    When(s.time).ago(notes.now),
+                    Self::escape(&s.said)
+                )
+            },
+        );
+        format!(
+            concat!(
+                "<form class=\"sync\" method=\"post\" action=\"/_comments/sync\">",
+                "<input type=\"hidden\" name=\"back\" value=\"{back}\">",
+                "<button type=\"submit\" title=\"Fetch everyone's comments from each remote, and push yours\">Sync</button>",
+                " <span class=\"muted\">{last}</span></form>"
+            ),
+            back = Self::escape(&Self::served(&notes.page)),
+            last = last,
         )
     }
 
@@ -468,5 +505,35 @@ mod tests {
             rail.contains(r#"name="back" value="/docs/arch/my%20page.html""#),
             "{rail}"
         );
+    }
+
+    #[test]
+    fn where_comments_are_written_the_column_says_what_the_last_sync_did() {
+        let render = |b: &str| b.to_string();
+        let never = shell().rail(&Notes::new(
+            Path::new("a.md"),
+            OnPage::default(),
+            TEXT,
+            &render,
+        ));
+        assert!(
+            never.contains(r#"<form class="sync" method="post" action="/_comments/sync">"#),
+            "{never}"
+        );
+        assert!(never.contains("Not synced yet"), "{never}");
+        let synced = Synced {
+            time: When::now().0,
+            brought: 0,
+            said: "up to date with <origin>".into(),
+        };
+        let notes =
+            Notes::new(Path::new("a.md"), OnPage::default(), TEXT, &render).synced(Some(synced));
+        let rail = shell().rail(&notes);
+        assert!(
+            rail.contains("Synced just now: up to date with &lt;origin&gt;"),
+            "{rail}"
+        );
+        let built = Shell::new("Site".into(), Links::Built).rail(&notes);
+        assert!(!built.contains("/_comments/sync"), "{built}");
     }
 }

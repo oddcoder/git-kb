@@ -16,12 +16,18 @@
 //!
 //! A stamp is when it was written, then a count and a random part, so that stamps sort in the order they were
 //! written, and no two people's are the same.
+//!
+//! Sync fetches everyone's refs from each remote and pushes only one's own, with git itself, so that its
+//! credentials are used. As each ref has one writer, pushes do not collide; only the same person writing from two
+//! clones can, and a push so refused is fetched, merged and pushed again. A ref is only ever moved forward here:
+//! one that has gone another way is merged with what is here, every file of each, so nothing seen is lost.
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -29,6 +35,8 @@ use anyhow::{Context, anyhow};
 use gix::ObjectId;
 use gix::object::tree::diff::ChangeDetached;
 use gix::objs::tree::EntryKind;
+use gix::refs::transaction::PreviousValue;
+use gix::traverse::tree::Recorder;
 use serde::{Deserialize, Serialize};
 use similar::{Algorithm, DiffTag, capture_diff_slices};
 
@@ -138,6 +146,14 @@ pub struct OnPage {
     pub lost: Vec<Thread>,
 }
 
+/// What a sync did: when, how many comments it brought, and what it says it did, or why it could not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Synced {
+    pub time: i64,
+    pub brought: usize,
+    pub said: String,
+}
+
 /// The comments kept in a repository.
 pub struct Store {
     git: gix::ThreadSafeRepository,
@@ -147,6 +163,8 @@ pub struct Store {
     namespace: String,
     /// Writes are one at a time, so that two at once both land on one's ref.
     writing: Mutex<()>,
+    /// What the last sync did.
+    synced: Mutex<Option<Synced>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -166,6 +184,7 @@ impl Store {
             prefix: repo.prefix().to_path_buf(),
             namespace: namespace.trim_end_matches('/').to_string(),
             writing: Mutex::default(),
+            synced: Mutex::default(),
         }
     }
 
@@ -429,10 +448,7 @@ impl Store {
     ) -> anyhow::Result<()> {
         let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
         let mine = self.mine();
-        let parent = match repo.try_find_reference(mine.as_str())? {
-            Some(mut reference) => Some(reference.peel_to_id()?.detach()),
-            None => None,
-        };
+        let parent = tip(repo, &mine)?;
         let base = match parent {
             Some(parent) => repo.find_commit(parent)?.tree_id()?.detach(),
             None => ObjectId::empty_tree(repo.object_hash()),
@@ -442,17 +458,271 @@ impl Store {
             tree.upsert(path.as_str(), EntryKind::Blob, *blob)?;
         }
         let tree = tree.write()?.detach();
-        let (name, email) = self.me();
+        self.write(repo, &mine, message, tree, parent)
+    }
+
+    /// A commit of a tree on a ref, by whoever writes here, refused if the ref is not at the first parent.
+    fn write(
+        &self,
+        repo: &gix::Repository,
+        name: &str,
+        message: &str,
+        tree: ObjectId,
+        parents: impl IntoIterator<Item = ObjectId>,
+    ) -> anyhow::Result<()> {
+        let (who, email) = self.me();
         let signature = gix::actor::Signature {
-            name: name.into(),
+            name: who.into(),
             email: email.into(),
             time: gix::date::Time::now_local_or_utc(),
         };
         let mut time = gix::date::parse::TimeBuf::default();
         let signature = signature.to_ref(&mut time);
-        repo.commit_as(signature, signature, mine.as_str(), message, tree, parent)
-            .with_context(|| format!("writing {mine}"))?;
+        repo.commit_as(signature, signature, name, message, tree, parents)
+            .with_context(|| format!("writing {name}"))?;
         Ok(())
+    }
+
+    /// Pulls everyone's comments from each remote and shares one's own, and says what it did; what it did is
+    /// kept, to show, failures too.
+    ///
+    /// # Errors
+    ///
+    /// When the repository has no remotes, or git cannot be run or fails.
+    pub fn sync(&self) -> anyhow::Result<Synced> {
+        let result = self.sync_remotes();
+        let synced = match &result {
+            Ok(synced) => synced.clone(),
+            Err(e) => Synced {
+                time: When::now().0,
+                brought: 0,
+                said: format!("{e:#}"),
+            },
+        };
+        *self.synced.lock().unwrap_or_else(PoisonError::into_inner) = Some(synced);
+        result
+    }
+
+    /// What the last sync did, if there has been one.
+    #[must_use]
+    pub fn last_sync(&self) -> Option<Synced> {
+        self.synced
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn sync_remotes(&self) -> anyhow::Result<Synced> {
+        let place = self
+            .git
+            .work_dir()
+            .unwrap_or_else(|| self.git.git_dir())
+            .to_path_buf();
+        // Never waiting on a prompt: no password asked on a terminal, and ssh in batch mode, unless set otherwise.
+        let ssh =
+            std::env::var("GIT_SSH_COMMAND").unwrap_or_else(|_| "ssh -o BatchMode=yes".into());
+        let git = |args: &[&str]| -> anyhow::Result<std::process::Output> {
+            Command::new("git")
+                .arg("-C")
+                .arg(&place)
+                .args(args)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_SSH_COMMAND", &ssh)
+                .output()
+                .context("running git")
+        };
+        let remotes = String::from_utf8(git(&["remote"])?.stdout)?;
+        let remotes: Vec<&str> = remotes.lines().filter(|r| !r.is_empty()).collect();
+        anyhow::ensure!(
+            !remotes.is_empty(),
+            "this repository has no remotes to sync with"
+        );
+        let mine = self.mine();
+        let (mut brought, mut said) = (0, vec![]);
+        for remote in remotes {
+            let (got, what) = self.sync_remote(remote, &mine, &git)?;
+            brought += got;
+            said.push(what);
+        }
+        Ok(Synced {
+            time: When::now().0,
+            brought,
+            said: said.join("; "),
+        })
+    }
+
+    /// Syncs with one remote: fetches everyone's refs, takes each in, and pushes one's own; again, if the push is
+    /// refused because the same person pushed from elsewhere meanwhile. Gives how many comments it brought, and
+    /// what it did.
+    fn sync_remote(
+        &self,
+        remote: &str,
+        mine: &str,
+        git: &dyn Fn(&[&str]) -> anyhow::Result<std::process::Output>,
+    ) -> anyhow::Result<(usize, String)> {
+        let last_line = |bytes: &[u8]| {
+            String::from_utf8_lossy(bytes)
+                .trim()
+                .lines()
+                .last()
+                .unwrap_or("")
+                .to_string()
+        };
+        // The remote's refs are kept apart, then each taken into the one here.
+        let tracking = format!("refs/git-kb/remotes/{remote}");
+        let spec = format!("+{}/*:{tracking}/*", self.namespace);
+        let mut brought = 0;
+        for _ in 0..3 {
+            let fetched = git(&["fetch", "--quiet", "--prune", remote, &spec])?;
+            anyhow::ensure!(
+                fetched.status.success(),
+                "couldn't fetch from {remote}: {}",
+                last_line(&fetched.stderr)
+            );
+            let repo = self.git.to_thread_local();
+            let theirs: Vec<(String, ObjectId)> = {
+                let references = repo.references()?;
+                let mut out = vec![];
+                for reference in references.prefixed(format!("{tracking}/").as_str())? {
+                    let mut reference = reference.map_err(|e| anyhow!(e))?;
+                    let name = reference.name().as_bstr().to_string();
+                    out.push((name, reference.peel_to_id()?.detach()));
+                }
+                out
+            };
+            for (name, id) in theirs {
+                let here = format!("{}/{}", self.namespace, &name[tracking.len() + 1..]);
+                brought += self.merge(&repo, &here, id, remote)?;
+            }
+            let Some(ours) = tip(&repo, mine)? else {
+                return Ok((brought, format!("{}from {remote}", got(brought))));
+            };
+            let theirs = tip(
+                &repo,
+                &format!("{tracking}/{}", &mine[self.namespace.len() + 1..]),
+            )?;
+            if theirs == Some(ours) {
+                return Ok((brought, format!("{}up to date with {remote}", got(brought))));
+            }
+            let pushed = git(&["push", "--quiet", remote, &format!("{mine}:{mine}")])?;
+            if pushed.status.success() {
+                return Ok((
+                    brought,
+                    format!("{}shared ours with {remote}", got(brought)),
+                ));
+            }
+            let why = String::from_utf8_lossy(&pushed.stderr);
+            let raced = ["fetch first", "non-fast-forward", "rejected"]
+                .iter()
+                .any(|r| why.contains(r));
+            anyhow::ensure!(
+                raced,
+                "couldn't push to {remote}: {}",
+                last_line(&pushed.stderr)
+            );
+        }
+        anyhow::bail!("couldn't push to {remote}: it kept moving")
+    }
+
+    /// Takes another history of a ref into the one here: by moving it forward, when it is behind, or else by a
+    /// commit of both, with every file of each. Gives how many comments it brought.
+    fn merge(
+        &self,
+        repo: &gix::Repository,
+        name: &str,
+        theirs: ObjectId,
+        from: &str,
+    ) -> anyhow::Result<usize> {
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        let ours = tip(repo, name)?;
+        let before = ours.map_or(Ok(0), |ours| comments_at(repo, ours))?;
+        match ours {
+            Some(ours) if ours == theirs || is_ancestor(repo, theirs, ours) => return Ok(0),
+            Some(ours) if is_ancestor(repo, ours, theirs) => {
+                let expected = PreviousValue::MustExistAndMatch(gix::refs::Target::Object(ours));
+                repo.reference(name, theirs, expected, format!("comments: from {from}"))?;
+            }
+            Some(ours) => {
+                let tree = union(
+                    repo,
+                    repo.find_commit(ours)?.tree_id()?.detach(),
+                    repo.find_commit(theirs)?.tree_id()?.detach(),
+                )?;
+                self.write(
+                    repo,
+                    name,
+                    &format!("Merge comments from {from}"),
+                    tree,
+                    [ours, theirs],
+                )?;
+            }
+            None => {
+                repo.reference(
+                    name,
+                    theirs,
+                    PreviousValue::MustNotExist,
+                    format!("comments: from {from}"),
+                )?;
+            }
+        }
+        let after = comments_at(repo, tip(repo, name)?.unwrap_or(theirs))?;
+        Ok(after.saturating_sub(before))
+    }
+}
+
+/// Where a ref is, if it is.
+fn tip(repo: &gix::Repository, name: &str) -> anyhow::Result<Option<ObjectId>> {
+    Ok(match repo.try_find_reference(name)? {
+        Some(mut reference) => Some(reference.peel_to_id()?.detach()),
+        None => None,
+    })
+}
+
+/// How many comments a ref's commit holds, its own and replies to others'.
+fn comments_at(repo: &gix::Repository, commit: ObjectId) -> anyhow::Result<usize> {
+    let mut files = Recorder::default();
+    repo.find_commit(commit)?
+        .tree()?
+        .traverse()
+        .breadthfirst(&mut files)?;
+    Ok(files
+        .records
+        .iter()
+        .filter(|f| f.mode.is_blob() && f.filepath.to_string().contains("/comments/"))
+        .count())
+}
+
+/// Two trees as one, with every file of each. Files are only ever added, so a file in both is the same; were it
+/// ever not so, theirs is kept beside ours rather than lost.
+fn union(repo: &gix::Repository, ours: ObjectId, theirs: ObjectId) -> anyhow::Result<ObjectId> {
+    let mut files = Recorder::default();
+    repo.find_tree(theirs)?
+        .traverse()
+        .breadthfirst(&mut files)?;
+    let mine = repo.find_tree(ours)?;
+    let mut tree = repo.edit_tree(ours)?;
+    for file in files.records.iter().filter(|f| f.mode.is_blob()) {
+        let path = file.filepath.to_string();
+        match mine.lookup_entry_by_path(&path)? {
+            None => {
+                tree.upsert(path.as_str(), EntryKind::Blob, file.oid)?;
+            }
+            Some(entry) if entry.oid() == file.oid => {}
+            Some(_) => {
+                let beside = format!("{path}.theirs-{}", file.oid.to_hex_with_len(8));
+                tree.upsert(beside.as_str(), EntryKind::Blob, file.oid)?;
+            }
+        }
+    }
+    Ok(tree.write()?.detach())
+}
+
+/// What a sync brought, as the start of what it says.
+fn got(brought: usize) -> String {
+    match brought {
+        0 => String::new(),
+        1 => "1 new comment ".into(),
+        n => format!("{n} new comments "),
     }
 }
 
@@ -994,6 +1264,134 @@ mod tests {
             lost,
             Vec::<String>::new(),
             "not lost either: it is not this history's"
+        );
+    }
+
+    /// A bare repository, as a team's shared remote, with a page pushed to it, and two people's clones of it, Ada's
+    /// and Ben's, each with a store; or, when `same`, two clones of Ada's.
+    fn team(same: bool) -> (tempfile::TempDir, [(Git, Store); 2]) {
+        let remote = tempfile::tempdir().unwrap();
+        let bare = remote.path().to_str().unwrap().to_owned();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q", "--bare", "-b", "main", &bare])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let clone = |name: &str, email: &str| {
+            let git = Git::new();
+            git.run(&["config", "user.name", name]);
+            git.run(&["config", "user.email", email]);
+            git.run(&["remote", "add", "origin", &bare]);
+            git
+        };
+        let ada = clone("Ada", "ada@x");
+        ada.write("docs/a.md", PAGE);
+        ada.commit("A page");
+        ada.run(&["push", "-q", "origin", "main"]);
+        let other = if same {
+            clone("Ada", "ada@x")
+        } else {
+            clone("Ben", "ben@x")
+        };
+        other.run(&["pull", "-q", "origin", "main"]);
+        let store =
+            |git: &Git| Store::new(&Repo::discover(&git.top().join("docs")).unwrap(), NAMESPACE);
+        let (a, b) = (store(&ada), store(&other));
+        (remote, [(ada, a), (other, b)])
+    }
+
+    fn begin_as(git: &Git, store: &Store, body: &str) -> String {
+        let begin = Begin {
+            page: Path::new("a.md"),
+            commit: head(git),
+            text: PAGE,
+            lines: 4..5,
+            snippet: Snippet::default(),
+        };
+        store.begin(&begin, body).unwrap()
+    }
+
+    fn bodies(store: &Store) -> Vec<String> {
+        let mut all: Vec<String> = store
+            .threads()
+            .unwrap()
+            .iter()
+            .flat_map(|t| {
+                t.comments
+                    .iter()
+                    .map(|c| format!("{}: {}", c.author, c.body))
+            })
+            .collect();
+        all.sort();
+        all
+    }
+
+    #[test]
+    fn sync_shares_each_person_s_comments_through_a_remote() {
+        let (_remote, [(ada, a), (_ben, b)]) = team(false);
+        let id = begin_as(&ada, &a, "From Ada");
+        let synced = a.sync().unwrap();
+        assert_eq!(synced.said, "shared ours with origin");
+        let synced = b.sync().unwrap();
+        assert_eq!(
+            (synced.brought, synced.said.as_str()),
+            (1, "1 new comment from origin")
+        );
+        assert_eq!(bodies(&b), ["Ada: From Ada"]);
+        b.reply(&id, "From Ben").unwrap();
+        b.sync().unwrap();
+        a.sync().unwrap();
+        assert_eq!(bodies(&a), ["Ada: From Ada", "Ben: From Ben"]);
+        assert_eq!(a.sync().unwrap().said, "up to date with origin");
+        assert_eq!(a.last_sync().unwrap().said, "up to date with origin");
+    }
+
+    #[test]
+    fn the_same_person_writing_from_two_clones_loses_nothing() {
+        let (_remote, [(one, a), (two, b)]) = team(true);
+        begin_as(&one, &a, "From the laptop");
+        begin_as(&two, &b, "From the desktop");
+        a.sync().unwrap();
+        // The desktop's own ref has gone another way from the remote's: merged, then pushed.
+        assert_eq!(
+            b.sync().unwrap().said,
+            "1 new comment shared ours with origin"
+        );
+        a.sync().unwrap();
+        let both = ["Ada: From the desktop", "Ada: From the laptop"];
+        assert_eq!(bodies(&a), both);
+        assert_eq!(bodies(&b), both);
+        let log = git_out(&one, &["log", "--format=%s", "-1", &a.mine()]);
+        assert_eq!(
+            log, "Merge comments from origin\n",
+            "the laptop moved forward to the merge"
+        );
+    }
+
+    #[test]
+    fn a_sync_without_remotes_says_so_and_is_kept() {
+        let (_git, store) = site();
+        let e = store.sync().unwrap_err();
+        assert!(format!("{e:#}").contains("no remotes"), "{e:#}");
+        assert!(store.last_sync().unwrap().said.contains("no remotes"));
+    }
+
+    #[test]
+    fn a_remote_s_other_refs_are_not_taken_as_comments() {
+        let (_remote, [(ada, a), (_ben, b)]) = team(false);
+        begin_as(&ada, &a, "From Ada");
+        a.sync().unwrap();
+        b.sync().unwrap();
+        a.sync().unwrap();
+        let refs = git_out(
+            &ada,
+            &["for-each-ref", "--format=%(refname)", "refs/git-kb/"],
+        );
+        assert_eq!(
+            refs, "refs/git-kb/comments/ada@x\nrefs/git-kb/remotes/origin/ada@x\n",
+            "only comments are fetched, beside one's own"
         );
     }
 }
