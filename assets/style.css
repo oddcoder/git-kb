@@ -192,7 +192,8 @@ ul.log, ul.refs { padding-left: 0; list-style: none; }
 .pop { resize: both; min-width: 240px; min-height: 60px; }
 
 /* The page, and the trail of the folders it is in. */
-.page { max-width: var(--text-width); margin: 0 auto; padding: 24px 24px 96px; }
+/* As wide as its column lets it, not as its content: a grid's item with auto margins would shrink to it. */
+.page { width: 100%; max-width: var(--text-width); margin: 0 auto; padding: 24px 24px 96px; }
 .crumbs { margin-bottom: 8px; color: var(--muted); font-size: 14px; }
 .crumbs a { color: var(--muted); }
 .crumbs .sep { margin: 0 6px; }
