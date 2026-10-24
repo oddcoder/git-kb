@@ -174,7 +174,8 @@ ul.log, ul.refs { padding-left: 0; list-style: none; }
 
 /* The layout, by dragging, as web/src/layout.ts keeps it: the sidebar's width, by its edge, or closed; the text's
    width, by its right edge; and where the text sits, by its left edge, centred unless placed. */
-[data-placed] .page { margin-left: var(--text-left, 0); }
+/* Placed text keeps its place while there is room, and moves left when the columns beside it grow. */
+[data-placed] .page { margin-left: max(0px, min(var(--text-left, 0px), 100% - min(var(--text-width), 100%))); }
 .edge { position: absolute; top: 0; bottom: 0; z-index: 5; width: 12px; cursor: col-resize; touch-action: none; }
 .edge::after { content: ""; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; border-radius: 1px;
                background: var(--accent); opacity: 0; transition: opacity 0.15s; }
