@@ -94,7 +94,8 @@ impl Graph {
 
     /// A link's target, from a page, as the page it names, if it names a page of the site: relative to the page,
     /// or from the site's top; not to another site, nor to a file that is not Markdown.
-    fn join(page: &Path, dest: &str) -> Option<PathBuf> {
+    #[must_use]
+    pub fn join(page: &Path, dest: &str) -> Option<PathBuf> {
         let path = dest.split(['#', '?']).next()?;
         let elsewhere = path.starts_with("//")
             || path

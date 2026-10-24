@@ -52,6 +52,8 @@ The sidebar shows the page's links: a graph of the pages around it, and each pag
 
 In a git repository, pages take review comments, kept in git but off every branch. Served, point at a paragraph and press its **+** to begin a thread on it; each thread has a box to reply in and a button to resolve or reopen it. The threads sit in a column beside the page, in its order, and follow their text as the page is edited, moved or renamed; a thread whose text has gone is listed under the rest. `/_comments` lists every thread of the site. Each person's comments are kept under their own ref, `refs/git-kb/comments/<their email>`, written as git's `user.name` and `user.email`, so the working tree, the index and every branch are left as they are. **Sync** in the column, which the server also does every few minutes, fetches everyone's comments from each remote and pushes yours, with git's own credentials. Pushes never collide, as each ref has one writer. At a commit, and built, the comments are only shown.
 
+A link to a page that is not there is marked, dashed, saying so when pointed at, served and built alike.
+
 What `.gitignore` files ignore is never shown or built. To leave out more, such as drafts, list it in a `.kbignore` file, which works like `.gitignore`.
 
 ## Settings

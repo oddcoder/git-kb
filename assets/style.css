@@ -366,6 +366,9 @@ pre.diff-lines code { white-space: pre-wrap; overflow-wrap: anywhere; }
                touch-action: none; }
 
 
+/* A link to a page that is not there. */
+a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashed; }
+
 /* A page's comments, in a column beside it, as src/shell/comments.rs draws it: a card for each thread, in the order
    of the page; and beside each block with threads, a marker linking to them. A resolved thread is hidden until Show
    resolved is ticked. On a narrow screen, the column goes under the page. */

@@ -46,7 +46,7 @@ use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
 use crate::live::{Change, Live};
 use crate::nav::{Nav, Pages};
-use crate::render::Renderer;
+use crate::render::{Opts, Renderer};
 use crate::shell::{self, Comparison, Links, Margin, Notes, PageHistory, Shell, Version};
 
 /// Serves a folder of Markdown.
@@ -802,21 +802,34 @@ impl View<'_> {
         notes: Option<&Notes>,
     ) -> crate::render::Page {
         let renderer = &self.server.renderer;
+        let broken =
+            |dest: &str| Graph::join(file, dest).is_some_and(|page| !self.files.contains(&page));
+        let opts = Opts {
+            broken: Some(&broken),
+            ..Opts::default()
+        };
         let (Some(repo), Some(at)) = (
             &self.server.repo,
             self.snapshot.as_ref().or(self.head.as_ref()),
         ) else {
-            return renderer.render(text);
+            return renderer.render_opts(text, &opts);
         };
         // The folder as it is is blamed as it is on disk, its lines not committed yet as such.
         let now = self.snapshot.is_none().then_some(bytes);
         let Ok(blame) = repo.blame(at, file, now) else {
-            return renderer.render(text);
+            return renderer.render_opts(text, &opts);
         };
         let margin = Margin::new(&self.shell, file, text, &blame, repo, renderer, &|_| None);
-        renderer.render_marked(text, &|_| None, &|range| {
+        let marks = |range: std::ops::Range<usize>| {
             self.shell.marked(margin.mark(range.clone()), notes, &range)
-        })
+        };
+        renderer.render_opts(
+            text,
+            &Opts {
+                gutter: Some(&marks),
+                ..opts
+            },
+        )
     }
 
     /// A page's history, as a page: the commits that changed it.
@@ -1050,7 +1063,10 @@ mod tests {
                 body.contains("<title>Overview · docs</title>"),
                 "{path}: {body}"
             );
-            assert!(body.contains(r#"<a href="dma.md">"#), "{path}: {body}");
+            assert!(
+                body.contains(r#"<a class="broken" href="dma.md" title="No such page: dma.md">"#),
+                "{path}: {body}"
+            );
         }
     }
 

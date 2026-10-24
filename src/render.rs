@@ -95,6 +95,22 @@ pub struct Mark {
 /// The mark for the block at a range of a page's text, if it has one.
 pub type Marks<'a> = &'a dyn Fn(std::ops::Range<usize>) -> Option<Mark>;
 
+/// Whether a link's target, as written, names a page that is not there.
+pub type Broken<'a> = &'a dyn Fn(&str) -> bool;
+
+/// What a page is rendered with, beyond its Markdown. Each is optional: without any, it renders as `render` does.
+#[derive(Default, Clone, Copy)]
+pub struct Opts<'a> {
+    /// Where each link's and image's target is now.
+    pub moved: Option<Moved<'a>>,
+    /// The mark beside each top-level block, which is then wrapped in `<div class="blk">` holding it.
+    pub gutter: Option<Marks<'a>>,
+    /// Which links name a page that is not there, to be marked.
+    pub broken: Option<Broken<'a>>,
+    /// Whether the text is a reader's, as a comment is: its HTML is shown as text.
+    pub safe: bool,
+}
+
 /// Renders Markdown as HTML. What it holds is how it renders, so that what later features need, such as a
 /// highlighter, is made once and kept, not made again for every page.
 #[derive(Debug, Clone)]
@@ -141,7 +157,7 @@ impl Renderer {
     /// Renders Markdown as HTML.
     #[must_use]
     pub fn render(&self, markdown: &str) -> Page {
-        self.render_with(markdown, &|_| None)
+        self.render_opts(markdown, &Opts::default())
     }
 
     /// Where each of a page's top-level blocks is in its text: each paragraph, heading, list, table, code block
@@ -309,26 +325,46 @@ impl Renderer {
     /// says, as a built site's pages are `.html` files rather than `.md`.
     #[must_use]
     pub fn render_with(&self, markdown: &str, moved: Moved) -> Page {
-        self.render_marked(markdown, moved, &|_| None)
+        self.render_opts(
+            markdown,
+            &Opts {
+                moved: Some(moved),
+                ..Opts::default()
+            },
+        )
     }
 
     /// The same, with each top-level block that `marks` gives a mark wrapped in `<div class="blk">`, holding
     /// its mark, so that the block can show it.
     #[must_use]
     pub fn render_marked(&self, markdown: &str, moved: Moved, marks: Marks) -> Page {
-        self.rendered(markdown, moved, marks, false)
+        self.render_opts(
+            markdown,
+            &Opts {
+                moved: Some(moved),
+                gutter: Some(marks),
+                ..Opts::default()
+            },
+        )
     }
 
     /// A reader's text, as a comment is, rendered: any HTML in it shown as text, so that it cannot run or
     /// restyle the page it is shown on.
     #[must_use]
     pub fn render_safe(&self, markdown: &str, moved: Moved) -> Page {
-        self.rendered(markdown, moved, &|_| None, true)
+        self.render_opts(
+            markdown,
+            &Opts {
+                moved: Some(moved),
+                safe: true,
+                ..Opts::default()
+            },
+        )
     }
 
-    /// Markdown rendered, its links and images where `moved` says, its blocks marked as `marks` says, and, when
-    /// it is a reader's, its HTML as text.
-    fn rendered(&self, markdown: &str, moved: Moved, marks: Marks, safe: bool) -> Page {
+    /// Markdown rendered as `opts` asks.
+    #[must_use]
+    pub fn render_opts(&self, markdown: &str, opts: &Opts) -> Page {
         let ranges = self.block_ranges(markdown);
         let (mut depth, mut block, mut open) = (0usize, 0usize, false);
         let mut ids = Ids::default();
@@ -337,7 +373,7 @@ impl Renderer {
         let mut events = Parser::new_ext(markdown, self.options);
         while let Some(event) = events.next() {
             if depth == 0 && matches!(event, Event::Start(_) | Event::Rule | Event::Html(_)) {
-                if let Some(mark) = ranges.get(block).cloned().and_then(marks) {
+                if let Some(mark) = ranges.get(block).cloned().and_then(|r| opts.gutter?(r)) {
                     out.push(Event::Html(
                         format!("<div class=\"blk {}\">{}", mark.class, mark.html).into(),
                     ));
@@ -369,6 +405,16 @@ impl Renderer {
                     let inner = Self::inside(&mut events);
                     out.extend(self.code_block(kind, inner));
                 }
+                // A link to a page that is not there is marked, its target as written; its end is a link's end.
+                Event::Start(Tag::Link { dest_url, .. })
+                    if opts.broken.is_some_and(|broken| broken(&dest_url)) =>
+                {
+                    let dest = Self::escape(&dest_url);
+                    out.push(Event::Html(
+                        format!(r#"<a class="broken" href="{dest}" title="No such page: {dest}">"#)
+                            .into(),
+                    ));
+                }
                 Event::Start(Tag::Link {
                     link_type,
                     dest_url,
@@ -376,7 +422,7 @@ impl Renderer {
                     id,
                 }) => out.push(Event::Start(Tag::Link {
                     link_type,
-                    dest_url: Self::target(dest_url, moved),
+                    dest_url: Self::target(dest_url, opts.moved),
                     title,
                     id,
                 })),
@@ -387,11 +433,13 @@ impl Renderer {
                     id,
                 }) => out.push(Event::Start(Tag::Image {
                     link_type,
-                    dest_url: Self::target(dest_url, moved),
+                    dest_url: Self::target(dest_url, opts.moved),
                     title,
                     id,
                 })),
-                Event::Html(html) | Event::InlineHtml(html) if safe => out.push(Event::Text(html)),
+                Event::Html(html) | Event::InlineHtml(html) if opts.safe => {
+                    out.push(Event::Text(html));
+                }
                 event => out.push(self.math(event)),
             }
             if depth == 0 && open {
@@ -418,8 +466,10 @@ impl Renderer {
     }
 
     /// A link's or image's target, or where `moved` says it is now.
-    fn target<'a>(dest: CowStr<'a>, moved: Moved) -> CowStr<'a> {
-        moved(&dest).map_or(dest, Into::into)
+    fn target<'a>(dest: CowStr<'a>, moved: Option<Moved>) -> CowStr<'a> {
+        moved
+            .and_then(|moved| moved(&dest))
+            .map_or(dest, Into::into)
     }
 
     /// A code block: a plugin's, as the plugin renders it; highlighted, when its language is known; or else as it
@@ -967,5 +1017,41 @@ mod tests {
             plain.contains("It costs $5, or $6.") && !plain.contains("data-plugin"),
             "{plain}"
         );
+    }
+
+    #[test]
+    fn a_link_to_a_page_that_is_not_there_is_marked() {
+        let broken = |dest: &str| dest == "gone.md";
+        let html = Renderer::new()
+            .render_opts(
+                "[Gone](gone.md) and [here](here.md).\n",
+                &Opts {
+                    broken: Some(&broken),
+                    ..Opts::default()
+                },
+            )
+            .html;
+        assert!(
+            html.contains(r#"<a class="broken" href="gone.md" title="No such page: gone.md">Gone</a> and <a href="here.md">here</a>."#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_link_is_judged_broken_as_written_not_where_it_moved() {
+        let broken = |dest: &str| dest == "gone.md";
+        let moved = |dest: &str| dest.strip_suffix(".md").map(|d| format!("{d}.html"));
+        let html = Renderer::new()
+            .render_opts(
+                "[Gone](gone.md) and [here](here.md).\n",
+                &Opts {
+                    broken: Some(&broken),
+                    moved: Some(&moved),
+                    ..Opts::default()
+                },
+            )
+            .html;
+        assert!(html.contains(r#"class="broken" href="gone.md""#), "{html}");
+        assert!(html.contains(r#"<a href="here.html">here</a>"#), "{html}");
     }
 }
