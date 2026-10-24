@@ -1,0 +1,19 @@
+name = "tikz"
+description = "TikZ diagrams, compiled to SVG in the browser by TikZJax and drawn in the theme's colors"
+blocks = ["tikz"]
+figure = true
+highlight = "latex"
+stage = '<script type="text/tikz" data-tikz-libraries="{libraries}" data-add-to-preamble="{preamble}" data-show-console="true">{source.raw}</script>'
+head = [
+  '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@drgrice1/tikzjax@1.0.0-beta24/dist/fonts.css">',
+  '<script src="https://cdn.jsdelivr.net/npm/@drgrice1/tikzjax@1.0.0-beta24/dist/tikzjax.js" defer></script>',
+]
+scripts = ["tikz.js"]
+
+[options]
+# The TikZ libraries every diagram may use.
+libraries = ["positioning", "calc", "fit", "backgrounds", "shapes.arrows", "shapes.geometric", "shadows", "arrows.meta"]
+
+[files]
+# TeX added before every diagram: the styles they share. tikz.js redraws the preamble's inks in the theme's.
+preamble = "preamble.tex"

@@ -53,7 +53,20 @@ use crate::render::Renderer;
 type Files = &'static [(&'static str, &'static [u8])];
 
 /// The built-in plugins: each one's name, plugin.toml and files.
-const BUILT_IN: &[(&str, &str, Files)] = &[];
+const BUILT_IN: &[(&str, &str, Files)] = &[(
+    "tikz",
+    include_str!("../plugins/tikz/plugin.toml"),
+    &[
+        (
+            "tikz.js",
+            include_bytes!(concat!(env!("OUT_DIR"), "/plugins/tikz/tikz.js")),
+        ),
+        (
+            "preamble.tex",
+            include_bytes!("../plugins/tikz/preamble.tex"),
+        ),
+    ],
+)];
 
 /// The built-in plugins' names.
 #[must_use]
@@ -791,5 +804,47 @@ pub(crate) mod tests {
             "<svg>x</svg>"
         );
         assert_eq!(clean_svg("<p>no svg</p>"), "<p>no svg</p>");
+    }
+
+    #[test]
+    fn without_git_kb_toml_every_built_in_plugin_is_used() {
+        let plugins = Plugins::load(&Config::default(), None, None).unwrap();
+        let names: Vec<&str> = plugins.all().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, built_in_names());
+    }
+
+    #[test]
+    fn tikz_diagrams_are_compiled_in_the_browser_with_the_shared_preamble() {
+        let mut given = toml::Table::new();
+        given.insert(
+            "libraries".into(),
+            toml::Value::Array(vec!["calc".into(), "fit".into()]),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = load(&dir, &[("tikz", given)]).unwrap();
+        let tikz = plugins.block("tikz").unwrap();
+        assert!(tikz.figure);
+        let html = plugins.render_block(tikz, "\\draw (0,0) -- (1,1);");
+        assert!(
+            html.contains(
+                r#"<script type="text/tikz" data-tikz-libraries="calc,fit" data-add-to-preamble=""#
+            ),
+            "{html}"
+        );
+        assert!(html.contains("\\draw (0,0) -- (1,1);</script>"), "{html}");
+        assert!(
+            html.contains("sfcontrol"),
+            "the preamble's inks are in it: {html}"
+        );
+        let head = plugins.head(&[&html], "/");
+        assert!(
+            head.contains("tikzjax.js") && head.contains("/_plugins/tikz/tikz.js"),
+            "{head}"
+        );
+        assert!(
+            plugins
+                .file("tikz", "tikz.js")
+                .is_some_and(|(_, js)| !js.is_empty())
+        );
     }
 }

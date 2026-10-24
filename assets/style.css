@@ -22,6 +22,9 @@
   --code-string: light-dark(#0a3069, #a5d6ff); --code-constant: light-dark(#0550ae, #79c0ff);
   --code-entity: light-dark(#6639ba, #d2a8ff); --code-tag: light-dark(#116329, #7ee787);
   --code-variable: light-dark(#953800, #ffa657);
+  --ink-control: light-dark(#0969da, #4493f8); --ink-compute: light-dark(#1a7f37, #3fb950);
+  --ink-memory: light-dark(#8250df, #a371f7); --ink-io: light-dark(#bc4c00, #f0883e);
+  --ink-gray: light-dark(#6e7781, #8b949e); --ink-software: light-dark(#57606a, #9198a1);
 }
 [data-palette="paper"] {
   --page: light-dark(#f2f0eb, #151411); --subtle: light-dark(#e9e6df, #1e1c17); --text: light-dark(#2b2a26, #e6e3da);
@@ -30,6 +33,9 @@
   --code-string: light-dark(#4c7a5c, #74a383); --code-constant: light-dark(#98663a, #b78357);
   --code-entity: light-dark(#6e5e90, #a392c8); --code-tag: light-dark(#4c7a5c, #74a383);
   --code-variable: light-dark(#98663a, #b78357);
+  --ink-control: light-dark(#3f6e96, #70a0cb); --ink-compute: light-dark(#4c7a5c, #74a383);
+  --ink-memory: light-dark(#6e5e90, #a392c8); --ink-io: light-dark(#98663a, #b78357);
+  --ink-gray: light-dark(#85837c, #7f7d76); --ink-software: light-dark(#5a6066, #a2a9b0);
 }
 [data-palette="solarized"] {
   --page: light-dark(#fdf6e3, #002b36); --subtle: light-dark(#eee8d5, #073642); --text: light-dark(#4f6168, #a3b1b3);
@@ -38,6 +44,9 @@
   --code-string: light-dark(#859900, #9db31a); --code-constant: light-dark(#cb4b16, #e0663a);
   --code-entity: light-dark(#6c71c4, #8a8fd8); --code-tag: light-dark(#859900, #9db31a);
   --code-variable: light-dark(#cb4b16, #e0663a);
+  --ink-control: light-dark(#268bd2, #4aa3e0); --ink-compute: light-dark(#859900, #9db31a);
+  --ink-memory: light-dark(#6c71c4, #8a8fd8); --ink-io: light-dark(#cb4b16, #e0663a);
+  --ink-gray: light-dark(#93a1a1, #586e75); --ink-software: light-dark(#586e75, #93a1a1);
 }
 [data-palette="nord"] {
   --page: light-dark(#eceff4, #2e3440); --subtle: light-dark(#e5e9f0, #3b4252); --text: light-dark(#2e3440, #e5e9f0);
@@ -46,6 +55,9 @@
   --code-string: light-dark(#5a7d45, #a3be8c); --code-constant: light-dark(#b4633f, #d08770);
   --code-entity: light-dark(#8f6a8a, #b48ead); --code-tag: light-dark(#5a7d45, #a3be8c);
   --code-variable: light-dark(#b4633f, #d08770);
+  --ink-control: light-dark(#5e81ac, #81a1c1); --ink-compute: light-dark(#5a7d45, #a3be8c);
+  --ink-memory: light-dark(#8f6a8a, #b48ead); --ink-io: light-dark(#b4633f, #d08770);
+  --ink-gray: light-dark(#6b7385, #7b8394); --ink-software: light-dark(#4c566a, #d8dee9);
 }
 [data-palette="gruvbox"] {
   --page: light-dark(#fbf1c7, #282828); --subtle: light-dark(#f2e5bc, #32302f); --text: light-dark(#3c3836, #ebdbb2);
@@ -54,6 +66,9 @@
   --code-string: light-dark(#79740e, #b8bb26); --code-constant: light-dark(#af3a03, #fe8019);
   --code-entity: light-dark(#8f3f71, #d3869b); --code-tag: light-dark(#79740e, #b8bb26);
   --code-variable: light-dark(#af3a03, #fe8019);
+  --ink-control: light-dark(#076678, #83a598); --ink-compute: light-dark(#79740e, #b8bb26);
+  --ink-memory: light-dark(#8f3f71, #d3869b); --ink-io: light-dark(#af3a03, #fe8019);
+  --ink-gray: light-dark(#928374, #928374); --ink-software: light-dark(#504945, #d5c4a1);
 }
 
 /* The text's size and fonts. */

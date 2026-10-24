@@ -1,0 +1,86 @@
+% Printing inks on paper: muted, desaturated tones for diagrams that always sit on an off-white sheet, so the same
+% colors serve a light page, a dark one and a printer. Every fill is a solid tint of its ink in the paper, so
+% nothing is transparent.
+\definecolor{sfpaper}{HTML}{F2F0EB}
+\definecolor{sfsoftware}{HTML}{5A6066}\definecolor{sfio}{HTML}{98663A}\definecolor{sfcontrol}{HTML}{3F6E96}
+\definecolor{sfcompute}{HTML}{4C7A5C}\definecolor{sfmemory}{HTML}{6E5E90}\definecolor{sfgray}{HTML}{85837C}
+\def\sfink{sfsoftware}
+\tikzset{
+  every picture/.style={color=sfgray},
+  box/.style={rectangle, rounded corners=4pt, minimum width=2.8cm, minimum height=1.1cm, align=center,
+    font=\sffamily\bfseries\small, line width=0.9pt},
+  % The ink is remembered, so that \sfsheets can draw a stacked unit's copies in it.
+  role/.style={box, fill=#1!14!sfpaper, draw=#1, text=#1, /utils/exec=\gdef\sfink{#1}},
+  software/.style={role=sfsoftware}, io/.style={role=sfio}, control/.style={role=sfcontrol},
+  compute/.style={role=sfcompute}, memory/.style={role=sfmemory},
+  wide/.style={minimum width=#1},
+  % A stacked unit, such as the MPUs, is drawn twice more behind itself, offset, in its own shape and ink, so only
+  % the sheets' edges show and no outline crosses the node.
+  stack/.style={preaction={preaction={transform canvas={xshift=8pt, yshift=8pt},
+      fill=\sfink!14!sfpaper, draw=\sfink}, transform canvas={xshift=4pt, yshift=4pt},
+      fill=\sfink!14!sfpaper, draw=\sfink}},
+  store/.style={cylinder, shape border rotate=90, aspect=0.18, minimum height=1.5cm, rounded corners=0pt},
+  group/.style={draw=sfgray, fill=sfgray!7!sfpaper, rounded corners=6pt,
+    line width=0.6pt, dash pattern=on 4pt off 2pt, inner sep=14pt},
+  group title/.style={anchor=north west, text=sfgray, font=\sffamily\bfseries, inner sep=7pt},
+  flow base/.style={draw=sfgray, fill=sfgray!18!sfpaper, text=sfgray, line width=0.6pt,
+    font=\sffamily\footnotesize, inner xsep=5pt, inner ysep=2.5pt, text height=1.7ex, text depth=0.45ex},
+  flow arrow/.style={flow base, single arrow, single arrow head extend=5.5pt, single arrow head indent=0pt},
+  biflow arrow/.style={flow base, double arrow, double arrow head extend=5.5pt, double arrow head indent=0pt},
+  band/.style={draw=sfgray, fill=sfgray!18!sfpaper, line width=0.6pt, line join=miter},
+  flow label/.style={text=sfgray, font=\sffamily\footnotesize, inner sep=1pt, fill=none,
+    text height=1.7ex, text depth=0.45ex},
+}
+% Block arrows. A shaft of 2*\sfbw with a head of 2*\sfhw, drawn as one outlined polygon, so the border runs
+% around the whole arrow. \flow goes straight; \flowv turns once, vertical then horizontal, and \flowh the other
+% way round. Each takes {from}{to}{label} and writes the label in the shaft, along its first leg. \biflow,
+% \biflowv and \biflowh are the same with a head at both ends.
+\newcommand\sfbw{5.5pt}   % half the shaft's width
+\newcommand\sfhw{11pt}    % half the head's width
+\newcommand\sfhl{9pt}     % the head's length
+% A straight arrow is a node of the arrow shapes, as long as the distance between its ends. A single arrow is
+% placed by its tail, because its centre anchor is the middle of its text, not of the arrow; a double arrow is
+% symmetric, so it is placed by its centre. #1 is the style, #2 the anchor, #3 where that anchor goes.
+% A label needs its own width, the shaft's padding and room for two heads. When the arrow is shorter than that,
+% the arrow would outgrow its ends, so this reports it on the console as SF-OVERFLOW; the cure is to move the boxes
+% apart.
+\newlength\sfw
+% Measured outside the picture, because TikZ selects \nullfont inside one.
+\newcommand\sfneed[1]{\pgfinterruptpicture\global\setbox1=\hbox{\sffamily\footnotesize #1}\endpgfinterruptpicture
+  \sfw=\dimexpr\wd1+10pt+2\sfhl\relax}
+\newcommand\sfcheck[2]{\pgfmathparse{(\sfw>#1)}\ifnum\pgfmathresult=1 \pgfmathparse{(\sfw-#1)/28.45}\typeout{SF-OVERFLOW: #2 (short by \pgfmathresult cm)}\fi}
+\newcommand\sfflow[6]{%
+  \sfneed{#6}%
+  \path let \p1=(#4), \p2=(#5), \p3=($(\p1)!0.5!(\p2)$),
+    \n1={atan2(\y2-\y1,\x2-\x1)}, \n2={veclen(\x2-\x1,\y2-\y1)},
+    \n3={ifthenelse(or(\n1>90.5,\n1<-89.5),1,0)} in
+    \pgfextra{\sfcheck{\n2}{#6}}
+    node[#1, anchor=#2, minimum height={\n2}, rotate={\n1-180*\n3}, shape border rotate={180*\n3}] at (#3) {#6};}
+\newcommand\flow[3]{\sfflow{flow arrow}{tail}{\p1}{#1}{#2}{#3}}
+\newcommand\biflow[3]{\sfflow{biflow arrow}{center}{\p3}{#1}{#2}{#3}}
+% An elbow's outline is one walk around the whole arrow: out along one wall, round the head, back along the other
+% wall and, for the two-headed form, round the tail's head to where it started. \n1 and \n2 are the horizontal and
+% vertical directions of travel, so one outline serves all four turns. #1 is 1 for a tail head and 0 without; #2
+% is the tail head's three points, or nothing.
+\newcommand\sfelbowV[4]{%
+  \path let \p1=(#3), \p2=(#4), \n1={ifthenelse(\x2>\x1,1,-1)}, \n2={ifthenelse(\y2>\y1,1,-1)} in
+    [band] (\x1-\n2*\sfbw, \y1+#1*\n2*\sfhl)
+    -- (\x1-\n2*\sfbw, \y2+\n1*\sfbw) -- (\x2-\n1*\sfhl, \y2+\n1*\sfbw) -- (\x2-\n1*\sfhl, \y2+\n1*\sfhw)
+    -- (\x2, \y2) -- (\x2-\n1*\sfhl, \y2-\n1*\sfhw) -- (\x2-\n1*\sfhl, \y2-\n1*\sfbw)
+    -- (\x1+\n2*\sfbw, \y2-\n1*\sfbw) -- (\x1+\n2*\sfbw, \y1+#1*\n2*\sfhl) #2 -- cycle;}
+\newcommand\sfelbowH[4]{%
+  \path let \p1=(#3), \p2=(#4), \n1={ifthenelse(\x2>\x1,1,-1)}, \n2={ifthenelse(\y2>\y1,1,-1)} in
+    [band] (\x1+#1*\n1*\sfhl, \y1+\n1*\sfbw)
+    -- (\x2-\n2*\sfbw, \y1+\n1*\sfbw) -- (\x2-\n2*\sfbw, \y2-\n2*\sfhl) -- (\x2-\n2*\sfhw, \y2-\n2*\sfhl)
+    -- (\x2, \y2) -- (\x2+\n2*\sfhw, \y2-\n2*\sfhl) -- (\x2+\n2*\sfbw, \y2-\n2*\sfhl)
+    -- (\x2+\n2*\sfbw, \y1-\n1*\sfbw) -- (\x1+#1*\n1*\sfhl, \y1-\n1*\sfbw) #2 -- cycle;}
+\newcommand\sftailV{-- (\x1+\n2*\sfhw, \y1+\n2*\sfhl) -- (\x1, \y1) -- (\x1-\n2*\sfhw, \y1+\n2*\sfhl)}
+\newcommand\sftailH{-- (\x1+\n1*\sfhl, \y1-\n1*\sfhw) -- (\x1, \y1) -- (\x1+\n1*\sfhl, \y1+\n1*\sfhw)}
+\newcommand\sflabelV[3]{\sfneed{#3}\path let \p1=(#1), \p2=(#2), \n1={abs(\y2-\y1)} in
+  \pgfextra{\sfcheck{\n1}{#3}} node[flow label, rotate=90] at ($(\p1)!0.5!(\x1,\y2)$) {#3};}
+\newcommand\sflabelH[3]{\sfneed{#3}\path let \p1=(#1), \p2=(#2), \n1={abs(\x2-\x1)} in
+  \pgfextra{\sfcheck{\n1}{#3}} node[flow label] at ($(\p1)!0.5!(\x2,\y1)$) {#3};}
+\newcommand\flowv[3]{\sfelbowV{0}{}{#1}{#2}\sflabelV{#1}{#2}{#3}}
+\newcommand\flowh[3]{\sfelbowH{0}{}{#1}{#2}\sflabelH{#1}{#2}{#3}}
+\newcommand\biflowv[3]{\sfelbowV{1}{\sftailV}{#1}{#2}\sflabelV{#1}{#2}{#3}}
+\newcommand\biflowh[3]{\sfelbowH{1}{\sftailH}{#1}{#2}\sflabelH{#1}{#2}{#3}}
