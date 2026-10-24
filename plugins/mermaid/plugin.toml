@@ -1,0 +1,9 @@
+name = "mermaid"
+description = "Mermaid diagrams: flowcharts, sequence, state and block diagrams and more, drawn in the browser"
+blocks = ["mermaid"]
+figure = true
+highlight = "text"
+stage = '<pre class="kb-mermaid">{source.html}</pre>'
+head = ['<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>']
+scripts = ["mermaid.js"]
+styles = ["mermaid.css"]

@@ -1,0 +1,3 @@
+/* A Mermaid diagram sits on the figure's paper, not in a code box. */
+.kb-stage pre.kb-mermaid { margin: 0; padding: 0; background: none; overflow: visible; }
+.kb-stage pre.kb-mermaid.kb-error { padding: 12px; white-space: pre-wrap; }

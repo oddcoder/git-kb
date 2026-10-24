@@ -1,3 +1,11 @@
+// What the libraries plugins load give the page.
+interface Window {
+  mermaid?: {
+    initialize(config: Record<string, unknown>): void;
+    render(id: string, source: string): Promise<{ svg: string }>;
+  };
+}
+
 // The events the page's scripts, and the libraries plugins load, tell each other by.
 interface DocumentEventMap {
   /** live.js swapped in a fresh copy of the page. */

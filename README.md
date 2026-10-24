@@ -92,6 +92,7 @@ Plugins render what Markdown alone does not: fenced blocks such as ```` ```tikz 
 | Plugin | Renders | How |
 |---|---|---|
 | `tikz` | ```` ```tikz ```` | TikZJax compiles the diagram in the browser, with a preamble of shared styles, and draws it in the theme's colors |
+| `mermaid` | ```` ```mermaid ```` | Mermaid draws the diagram in the browser, in the page's scheme |
 
 A diagram plugin's blocks are *figures*: each shows its source under a bar, and can be clicked to zoom.
 

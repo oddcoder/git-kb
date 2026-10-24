@@ -53,20 +53,36 @@ use crate::render::Renderer;
 type Files = &'static [(&'static str, &'static [u8])];
 
 /// The built-in plugins: each one's name, plugin.toml and files.
-const BUILT_IN: &[(&str, &str, Files)] = &[(
-    "tikz",
-    include_str!("../plugins/tikz/plugin.toml"),
-    &[
-        (
-            "tikz.js",
-            include_bytes!(concat!(env!("OUT_DIR"), "/plugins/tikz/tikz.js")),
-        ),
-        (
-            "preamble.tex",
-            include_bytes!("../plugins/tikz/preamble.tex"),
-        ),
-    ],
-)];
+const BUILT_IN: &[(&str, &str, Files)] = &[
+    (
+        "tikz",
+        include_str!("../plugins/tikz/plugin.toml"),
+        &[
+            (
+                "tikz.js",
+                include_bytes!(concat!(env!("OUT_DIR"), "/plugins/tikz/tikz.js")),
+            ),
+            (
+                "preamble.tex",
+                include_bytes!("../plugins/tikz/preamble.tex"),
+            ),
+        ],
+    ),
+    (
+        "mermaid",
+        include_str!("../plugins/mermaid/plugin.toml"),
+        &[
+            (
+                "mermaid.js",
+                include_bytes!(concat!(env!("OUT_DIR"), "/plugins/mermaid/mermaid.js")),
+            ),
+            (
+                "mermaid.css",
+                include_bytes!("../plugins/mermaid/mermaid.css"),
+            ),
+        ],
+    ),
+];
 
 /// The built-in plugins' names.
 #[must_use]
@@ -845,6 +861,23 @@ pub(crate) mod tests {
             plugins
                 .file("tikz", "tikz.js")
                 .is_some_and(|(_, js)| !js.is_empty())
+        );
+    }
+
+    #[test]
+    fn mermaid_diagrams_are_drawn_in_the_browser_from_their_escaped_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = load(&dir, &[("mermaid", toml::Table::new())]).unwrap();
+        let mermaid = plugins.block("mermaid").unwrap();
+        let html = plugins.render_block(mermaid, "graph TD; A-->B<C");
+        assert!(
+            html.contains(r#"<pre class="kb-mermaid">graph TD; A--&gt;B&lt;C</pre>"#),
+            "{html}"
+        );
+        let head = plugins.head(&[&html], "/");
+        assert!(
+            head.contains("mermaid.min.js") && head.contains("/_plugins/mermaid/mermaid.css"),
+            "{head}"
         );
     }
 }
