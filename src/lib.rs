@@ -2,6 +2,7 @@
 
 pub mod build;
 pub mod cli;
+pub mod comments;
 pub mod config;
 pub mod diff;
 pub mod git;

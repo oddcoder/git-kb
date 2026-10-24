@@ -97,6 +97,12 @@ impl Repo {
         })
     }
 
+    /// The repository, for what reads or writes it beyond the site's files, as the comments do.
+    #[must_use]
+    pub fn git(&self) -> &gix::ThreadSafeRepository {
+        &self.git
+    }
+
     /// The site's files at the commit a revision names: a branch, a tag, a commit's id, or anything else
     /// `git rev-parse` takes, as `main~2`.
     ///
