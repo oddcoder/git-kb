@@ -27,6 +27,8 @@ const CLASSES: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "hl-" };
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub html: String,
+    /// Where in the HTML its title ends: after its first block, when that is a top-level heading, or else at 0.
+    pub title_end: usize,
     /// The text of its first top-level heading, if it has one.
     pub title: Option<String>,
     /// Every heading, in order.
@@ -53,15 +55,19 @@ pub struct Heading {
 
 impl Page {
     /// A page from its events, as rendered, and its headings.
-    fn new(events: Vec<Event>, headings: Vec<Heading>) -> Self {
+    fn new(mut events: Vec<Event>, headings: Vec<Heading>, title_end: usize) -> Self {
+        let rest = events.split_off(title_end);
         let mut html = String::new();
         html::push_html(&mut html, events.into_iter());
+        let title_end = html.len();
+        html::push_html(&mut html, rest.into_iter());
         let title = headings
             .iter()
             .find(|h| h.level == HeadingLevel::H1 && !h.text.is_empty())
             .map(|h| h.text.clone());
         Self {
             html,
+            title_end,
             title,
             headings,
         }
@@ -488,12 +494,14 @@ impl Renderer {
         };
         let ranges = self.block_ranges(markdown);
         let lines = Lines::of(markdown);
-        let (mut depth, mut block, mut open) = (0usize, 0usize, false);
+        let (mut depth, mut block, mut open, mut title_end) = (0usize, 0usize, false, 0);
         let mut ids = Ids::default();
         let mut headings = vec![];
         let mut out = vec![];
         let mut events = Parser::new_ext(markdown, self.options);
         while let Some(event) = events.next() {
+            // The title is the page's first block, when that is a top-level heading.
+            let title = depth == 0 && block == 0 && Self::top_heading(&event);
             if depth == 0 && matches!(event, Event::Start(_) | Event::Rule | Event::Html(_)) {
                 if let Some(range) = ranges.get(block).cloned()
                     && let Some(mark) = opts.gutter.and_then(|gutter| gutter(range.clone()))
@@ -534,11 +542,7 @@ impl Renderer {
                 Event::Start(Tag::Link { dest_url, .. })
                     if opts.broken.is_some_and(|broken| broken(&dest_url)) =>
                 {
-                    let dest = Self::escape(&dest_url);
-                    out.push(Event::Html(
-                        format!(r#"<a class="broken" href="{dest}" title="No such page: {dest}">"#)
-                            .into(),
-                    ));
+                    out.push(Self::broken_link(&dest_url));
                 }
                 Event::Start(Tag::Link {
                     link_type,
@@ -571,8 +575,11 @@ impl Renderer {
                 out.push(Event::Html("</div>".into()));
                 open = false;
             }
+            if title {
+                title_end = out.len();
+            }
         }
-        Page::new(out, headings)
+        Page::new(out, headings, title_end)
     }
 
     /// Text with its figure references as links, by their figures' numbers; any other event as it is.
@@ -660,6 +667,25 @@ impl Renderer {
             Self::escape(&format!("{dollars}{math}{dollars}"))
         });
         Event::InlineHtml(html.into())
+    }
+
+    /// Whether an event starts a top-level heading, as a page's title.
+    fn top_heading(event: &Event) -> bool {
+        matches!(
+            event,
+            Event::Start(Tag::Heading {
+                level: HeadingLevel::H1,
+                ..
+            })
+        )
+    }
+
+    /// The start of a link to a page that is not there, marked, its target as written; its end is a link's end.
+    fn broken_link<'a>(dest: &str) -> Event<'a> {
+        let dest = Self::escape(dest);
+        Event::Html(
+            format!(r#"<a class="broken" href="{dest}" title="No such page: {dest}">"#).into(),
+        )
     }
 
     /// A link's or image's target, or where `moved` says it is now.
@@ -1473,6 +1499,34 @@ mod tests {
                 .html
                 .contains("[[Overview]]"),
             "a page's own text has no wiki links"
+        );
+    }
+
+    #[test]
+    fn the_title_ends_after_a_first_top_level_heading() {
+        let page = Renderer::new().render("# Title\n\nBody.\n");
+        assert_eq!(
+            &page.html[..page.title_end],
+            "<h1 id=\"title\">Title</h1>\n"
+        );
+        assert_eq!(&page.html[page.title_end..], "<p>Body.</p>\n");
+        for untitled in ["Body.\n\n# Title\n", "## Sub\n\nBody.\n"] {
+            assert_eq!(Renderer::new().render(untitled).title_end, 0, "{untitled}");
+        }
+    }
+
+    #[test]
+    fn the_title_ends_after_its_mark_too() {
+        let page = Renderer::new().render_marked("# Title\n\nBody.\n", &|_| None, &|_| {
+            Some(Mark {
+                class: "x",
+                html: String::new(),
+            })
+        });
+        assert!(
+            page.html[..page.title_end].ends_with("</div>"),
+            "{}",
+            page.html
         );
     }
 }

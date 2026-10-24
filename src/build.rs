@@ -433,7 +433,7 @@ impl Builder {
             None => self.renderer.render_opts(markdown, &opts),
         };
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
-        let title = page.title.unwrap_or_else(|| name.into_owned());
+        let title = page.title.clone().unwrap_or_else(|| name.into_owned());
         let at = path.parent().unwrap_or(Path::new(""));
         let file = path.with_extension("html");
         let file = file.file_name().unwrap_or_default().to_string_lossy();
@@ -443,7 +443,7 @@ impl Builder {
             headings: &page.headings,
             graph: Some(within.graph),
         };
-        let body = shell.noted(at, path, &page.html, history);
+        let body = shell.noted(at, path, &page, history);
         let body = Shell::with_source(&body, &self.renderer.source(markdown));
         let rail = notes.map(|notes| shell.rail(&notes)).unwrap_or_default();
         (

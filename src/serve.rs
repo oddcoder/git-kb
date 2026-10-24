@@ -760,7 +760,7 @@ impl View<'_> {
             .notes(file, &text, &render)
             .map(|notes| notes.composing(composing));
         let page = self.render(file, &text, &bytes, notes.as_ref());
-        let title = page.title.unwrap_or_else(|| Server::stem(file));
+        let title = page.title.clone().unwrap_or_else(|| Server::stem(file));
         let graph = self.graph();
         let nav = Nav {
             pages: &pages,
@@ -770,7 +770,7 @@ impl View<'_> {
         };
         let body = self
             .shell
-            .noted(at, file, &page.html, &self.page_history(file, &bytes));
+            .noted(at, file, &page, &self.page_history(file, &bytes));
         let body = Shell::with_source(&body, &self.server.renderer.source(&text));
         let rail = notes
             .map(|notes| self.shell.rail(&notes))
@@ -1987,5 +1987,34 @@ mod tests {
         git.commit("More pages");
         let body = Site::of(git.top().join("docs")).get("/docs/a.html").await.2;
         assert!(body.contains(r#"See <a href="/docs/b.html">B</a>, <a href="/docs/arch/c.html">arch/c.md</a> and <a class="broken" href="kb:Nope" title="No such page: kb:Nope">Nope</a>."#), "{body}");
+    }
+
+    #[tokio::test]
+    async fn when_a_page_last_changed_is_said_under_its_title_or_at_its_top() {
+        let git = crate::git::tests::Git::new();
+        git.write("docs/a.md", "# A\n\nBody.\n");
+        git.write("docs/b.md", "Intro.\n\n# Later\n\nMore.\n");
+        git.commit("Two pages");
+        let site = Site::of(git.top().join("docs"));
+        let titled = site.get("/docs/a.html").await.2;
+        let (meta, body) = (
+            titled.find("class=\"meta\"").unwrap(),
+            titled.find("<p>Body.</p>").unwrap(),
+        );
+        let title = titled.find("<h1 id=\"a\">").unwrap();
+        assert!(title < meta && meta < body, "under the title: {titled}");
+        assert!(
+            titled[title..meta].contains("</div>"),
+            "after the title's block, not inside it: {titled}"
+        );
+        let untitled = site.get("/docs/b.html").await.2;
+        let (meta, intro) = (
+            untitled.find("class=\"meta\"").unwrap(),
+            untitled.find("<p>Intro.</p>").unwrap(),
+        );
+        assert!(
+            meta < intro,
+            "at the top, not under a heading further down: {untitled}"
+        );
     }
 }

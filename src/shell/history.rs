@@ -8,6 +8,7 @@ use std::path::Path;
 
 use super::{Links, Shell};
 use crate::git::{Change, History, Revision, Snapshot, When};
+use crate::render::Page as Rendered;
 
 /// Where a page stands against the last commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,15 +53,16 @@ impl<'a> PageHistory<'a> {
 impl Shell {
     /// A page's body with the line that says when it last changed under its title, or at its top.
     #[must_use]
-    pub fn noted(&self, at: &Path, page: &Path, body: &str, history: &PageHistory) -> String {
+    pub fn noted(
+        &self,
+        at: &Path,
+        page: &Path,
+        rendered: &Rendered,
+        history: &PageHistory,
+    ) -> String {
         let meta = self.meta(at, page, history);
-        match body.find("</h1>") {
-            Some(end) => {
-                let end = end + "</h1>".len();
-                format!("{}\n{meta}{}", &body[..end], &body[end..])
-            }
-            None => format!("{meta}{body}"),
-        }
+        let (title, rest) = rendered.html.split_at(rendered.title_end);
+        format!("{title}{meta}{rest}")
     }
 
     /// When a page last changed, and by whom, in what commit; whether it has changed since; and, served, a
