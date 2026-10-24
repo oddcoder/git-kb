@@ -709,7 +709,8 @@ impl Renderer {
 
     /// A fence's language: the first word of its info, so that what follows it, as in
     /// ```` ```rust ignore ````, is left for other uses.
-    fn lang(info: &str) -> &str {
+    #[must_use]
+    pub fn lang(info: &str) -> &str {
         info.split_whitespace().next().unwrap_or("")
     }
 }

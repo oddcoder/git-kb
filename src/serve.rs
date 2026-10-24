@@ -38,6 +38,8 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::{debug, error, info, warn};
 
+mod agents;
+
 use crate::build::{Builder, Folder};
 use crate::comments::{Begin, Snippet, Store};
 use crate::config::{CommentsConfig, LookConfig};
@@ -208,6 +210,7 @@ impl Server {
                     },
                 ),
             )
+            .merge(Self::agent_routes())
             .fallback(|State(server): State<Arc<Self>>, uri: Uri| async move {
                 let (path, query) = (uri.path().to_owned(), uri.query().map(str::to_owned));
                 tokio::task::spawn_blocking(move || server.answer(&path, query.as_deref()))
@@ -250,6 +253,9 @@ impl Server {
         }
         if let Some(rest) = path.strip_prefix("/_plugins/") {
             return self.plugin_file(rest);
+        }
+        if path == "/llms.txt" || path == "/_ai" || path.starts_with("/_ai/") {
+            return self.agent_answer(path, query.unwrap_or(""));
         }
         let (snapshot, rest) = if let Some(rest) = path.strip_prefix("/docs") {
             if rest.is_empty() {
@@ -1036,6 +1042,19 @@ mod tests {
             let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
             let said = location.unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
             (status, said)
+        }
+
+        /// The status, and the body, of the answer to JSON posted, as an agent posts it.
+        async fn post_json(&self, path: &str, json: &str) -> (StatusCode, String) {
+            let router = Arc::new(Server::new(self.docs.clone(), None)).router();
+            let request = Request::post(path)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json.to_owned()))
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            let status = response.status();
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            (status, String::from_utf8_lossy(&body).into_owned())
         }
 
         /// The status, content type, and body or else where it redirects, of the answer to a request.
@@ -1907,5 +1926,53 @@ mod tests {
         assert!(page.contains("<title>Comments · docs</title>"), "{page}");
         assert!(page.contains("1 open, 0 resolved, on 1 pages"), "{page}");
         assert!(page.contains("<b>Ada</b>: Why two?"), "{page}");
+    }
+
+    #[tokio::test]
+    async fn agents_read_pages_and_comment_on_them_as_ais() {
+        let git = commented("A person's thread");
+        let site = Site::of(git.top().join("docs"));
+        assert!(site.get("/_ai").await.2.contains("POST /_ai/threads"));
+        assert!(site.get("/llms.txt").await.2.contains("/_ai"));
+        let pages = site.get("/_ai/pages").await.2;
+        assert!(pages.contains(r#""path":"/a.md""#), "{pages}");
+        let start = r#"{"agent": "Claude (test)", "page": "/a.md", "quote": "One.", "kind": "question", "body": "Why one?"}"#;
+        let (status, begun) = site.post_json("/_ai/threads", start).await;
+        assert_eq!(status, StatusCode::CREATED, "{begun}");
+        assert!(begun.contains(r#""lines":{"first":3,"last":3}"#), "{begun}");
+        let missing = r#"{"agent": "Claude (test)", "page": "/a.md", "quote": "Three.", "kind": "question", "body": "?"}"#;
+        assert_eq!(
+            site.post_json("/_ai/threads", missing).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let page = site.get("/_ai/page?path=/a.md").await.2;
+        assert!(
+            page.contains(r#""by":"ai""#) && page.contains(r#""agent":"Claude (test)""#),
+            "{page}"
+        );
+        let person = page
+            .split(r#""id":""#)
+            .find(|t| t.contains("A person's thread"))
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .to_owned();
+        let (status, said) = site
+            .post_json(
+                &format!("/_ai/threads/{person}/resolve"),
+                r#"{"agent": "Claude (test)", "resolved": true}"#,
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a person's thread is theirs to resolve: {said}"
+        );
+        let shown = site.get("/docs/a.html").await.2;
+        assert!(
+            shown.contains("kind-question") && shown.contains("🤖 AI"),
+            "{shown}"
+        );
     }
 }

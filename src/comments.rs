@@ -47,6 +47,10 @@ use crate::render::Renderer;
 /// The longest comment taken, in bytes.
 pub const MAX_BODY: usize = 20_000;
 
+/// What a thread an AI begins raises, as it says: a concern, a question, a suggestion or a note. People's threads
+/// have none.
+pub const KINDS: [&str; 4] = ["concern", "question", "suggestion", "note"];
+
 /// A thread: where it began, its comments, oldest first, and whether it is resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thread {
@@ -63,6 +67,8 @@ pub struct Thread {
     /// For a thread on chosen words: the words, and those just before and after them, to find them again among
     /// others like them. Empty for a thread on whole lines.
     pub snippet: Snippet,
+    /// One of `KINDS`, for a thread an AI began; empty for a person's.
+    pub kind: String,
     pub resolved: bool,
     pub comments: Vec<Comment>,
 }
@@ -86,6 +92,18 @@ pub struct Comment {
     /// When it was written, in seconds since 1970.
     pub time: i64,
     pub body: String,
+    /// Set when an AI wrote it, through `/_ai`; never otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<Ai>,
+}
+
+/// Who an AI comment is from: the agent, as it names itself, and the person, by their git name, whose server it
+/// wrote through.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ai {
+    pub agent: String,
+    #[serde(default)]
+    pub for_whom: String,
 }
 
 /// Where a thread begins: on lines of a page's source, as it is at a commit or with edits not committed yet.
@@ -109,6 +127,8 @@ struct Anchor {
     quote: String,
     #[serde(flatten)]
     snippet: Snippet,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    kind: String,
 }
 
 /// A resolve or a reopen, as kept in `threads/<id>/state/`.
@@ -118,6 +138,8 @@ struct Resolve {
     email: String,
     time: i64,
     resolved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ai: Option<Ai>,
 }
 
 /// Where a thread is on a page as it is shown.
@@ -250,7 +272,29 @@ impl Store {
     ///
     /// When the comment is empty or too long, or the repository cannot be written.
     pub fn begin(&self, on: &Begin, body: &str) -> anyhow::Result<String> {
+        self.begin_as(on, body, None)
+    }
+
+    /// Begins a thread, by whoever writes here, or, given `(agent, kind)`, by that AI, for them, raising that kind
+    /// of point; and gives its id.
+    ///
+    /// # Errors
+    ///
+    /// When the comment is empty or too long, the kind is not one of `KINDS`, or the repository cannot be written.
+    pub fn begin_as(
+        &self,
+        on: &Begin,
+        body: &str,
+        ai: Option<(&str, &str)>,
+    ) -> anyhow::Result<String> {
         let body = Self::body(body)?;
+        if let Some((_, kind)) = ai {
+            anyhow::ensure!(
+                KINDS.contains(&kind),
+                "a kind is one of {}",
+                KINDS.join(", ")
+            );
+        }
         let repo = self.git.to_thread_local();
         let lines: Vec<&str> = on.text.lines().collect();
         let start = on.lines.start.min(lines.len());
@@ -265,16 +309,24 @@ impl Store {
             lines: [start, end],
             quote: lines[start..end].join("\n"),
             snippet: on.snippet.clone(),
+            kind: ai.map(|(_, kind)| kind.to_string()).unwrap_or_default(),
         };
         let files = [
             (format!("texts/{text}"), text),
             (format!("threads/{id}/thread.json"), json(&repo, &anchor)?),
             (
                 format!("threads/{id}/comments/{}.json", stamp()),
-                json(&repo, &self.comment(body))?,
+                json(&repo, &self.comment(body, ai.map(|(agent, _)| agent)))?,
             ),
         ];
-        let message = format!("Comment on {}: {}", on.page.display(), first_words(body));
+        let by = ai
+            .map(|(agent, kind)| format!(" (AI: {agent}, {kind})"))
+            .unwrap_or_default();
+        let message = format!(
+            "Comment on {}{by}: {}",
+            on.page.display(),
+            first_words(body)
+        );
         self.commit(&repo, &files, &message)?;
         Ok(id)
     }
@@ -285,14 +337,30 @@ impl Store {
     ///
     /// When there is no such thread, the reply is empty or too long, or the repository cannot be written.
     pub fn reply(&self, id: &str, body: &str) -> anyhow::Result<()> {
+        self.reply_as(id, body, None)
+    }
+
+    /// Replies to a thread, as whoever writes here, or, given an agent, as that AI, for them.
+    ///
+    /// # Errors
+    ///
+    /// When there is no such thread, the reply is empty or too long, or the repository cannot be written.
+    pub fn reply_as(&self, id: &str, body: &str, agent: Option<&str>) -> anyhow::Result<()> {
         let body = Self::body(body)?;
         let thread = self.thread(id)?.ok_or_else(|| anyhow!("no thread {id}"))?;
         let repo = self.git.to_thread_local();
         let file = (
             format!("threads/{id}/comments/{}.json", stamp()),
-            json(&repo, &self.comment(body))?,
+            json(&repo, &self.comment(body, agent))?,
         );
-        let message = format!("Reply on {}: {}", thread.page.display(), first_words(body));
+        let by = agent
+            .map(|agent| format!(" (AI: {agent})"))
+            .unwrap_or_default();
+        let message = format!(
+            "Reply on {}{by}: {}",
+            thread.page.display(),
+            first_words(body)
+        );
         self.commit(&repo, &[file], &message)
     }
 
@@ -302,21 +370,51 @@ impl Store {
     ///
     /// When there is no such thread, or the repository cannot be written.
     pub fn resolve(&self, id: &str, resolved: bool) -> anyhow::Result<()> {
+        self.resolve_as(id, resolved, None)
+    }
+
+    /// Resolves or reopens a thread, as whoever writes here, or, given an agent, as that AI: an AI only a thread an
+    /// AI began, never a person's.
+    ///
+    /// # Errors
+    ///
+    /// When there is no such thread, an AI's would be a person's, or the repository cannot be written.
+    pub fn resolve_as(&self, id: &str, resolved: bool, agent: Option<&str>) -> anyhow::Result<()> {
         let thread = self.thread(id)?.ok_or_else(|| anyhow!("no thread {id}"))?;
+        anyhow::ensure!(
+            agent.is_none() || thread.comments.first().is_some_and(|c| c.ai.is_some()),
+            "an AI may resolve or reopen only threads an AI began; this one a person began"
+        );
         let repo = self.git.to_thread_local();
-        let (author, email) = self.me();
-        let event = Resolve {
-            author,
-            email,
-            time: When::now().0,
-            resolved,
+        let (name, email) = self.me();
+        let event = match agent {
+            None => Resolve {
+                author: name,
+                email,
+                time: When::now().0,
+                resolved,
+                ai: None,
+            },
+            Some(agent) => Resolve {
+                author: agent.to_string(),
+                email: String::new(),
+                time: When::now().0,
+                resolved,
+                ai: Some(Ai {
+                    agent: agent.to_string(),
+                    for_whom: name,
+                }),
+            },
         };
         let file = (
             format!("threads/{id}/state/{}.json", stamp()),
             json(&repo, &event)?,
         );
         let what = if resolved { "Resolve" } else { "Reopen" };
-        let message = format!("{what} a thread on {}", thread.page.display());
+        let by = agent
+            .map(|agent| format!(" (AI: {agent})"))
+            .unwrap_or_default();
+        let message = format!("{what} a thread on {}{by}", thread.page.display());
         self.commit(&repo, &[file], &message)
     }
 
@@ -427,14 +525,27 @@ impl Store {
         Ok(body)
     }
 
-    /// A comment by whoever writes here, now.
-    fn comment(&self, body: &str) -> Comment {
-        let (author, email) = self.me();
-        Comment {
-            author,
-            email,
-            time: When::now().0,
-            body: body.to_string(),
+    /// A comment by whoever writes here, now; or, given an agent, by that AI, for them.
+    fn comment(&self, body: &str, agent: Option<&str>) -> Comment {
+        let (name, email) = self.me();
+        match agent {
+            None => Comment {
+                author: name,
+                email,
+                time: When::now().0,
+                body: body.to_string(),
+                ai: None,
+            },
+            Some(agent) => Comment {
+                author: agent.to_string(),
+                email: String::new(),
+                time: When::now().0,
+                body: body.to_string(),
+                ai: Some(Ai {
+                    agent: agent.to_string(),
+                    for_whom: name,
+                }),
+            },
         }
     }
 
@@ -862,6 +973,7 @@ impl Parts {
             lines: start..end.max(start),
             quote: anchor.quote,
             snippet: anchor.snippet,
+            kind: anchor.kind,
             resolved: self
                 .resolves
                 .into_values()
@@ -1392,6 +1504,56 @@ mod tests {
         assert_eq!(
             refs, "refs/git-kb/comments/ada@x\nrefs/git-kb/remotes/origin/ada@x\n",
             "only comments are fetched, beside one's own"
+        );
+    }
+
+    #[test]
+    fn an_ai_s_comments_say_whose_they_are_and_it_resolves_only_its_own() {
+        let (git, store) = site();
+        let person = begin_on_two(&git, &store);
+        let begin = Begin {
+            page: Path::new("a.md"),
+            commit: head(&git),
+            text: "# A\n\nOne.\n\nTwo.\n",
+            lines: 2..3,
+            snippet: Snippet::default(),
+        };
+        assert!(
+            store
+                .begin_as(&begin, "Hmm", Some(("Claude", "rant")))
+                .is_err(),
+            "no such kind"
+        );
+        let ai = store
+            .begin_as(&begin, "Unclear", Some(("Claude", "question")))
+            .unwrap();
+        let thread = store.thread(&ai).unwrap().unwrap();
+        assert_eq!(thread.kind, "question");
+        let by = thread.comments[0].ai.clone().unwrap();
+        assert_eq!(
+            (
+                thread.comments[0].author.as_str(),
+                by.agent.as_str(),
+                by.for_whom.as_str()
+            ),
+            ("Claude", "Claude", "T")
+        );
+        store.reply_as(&person, "A note", Some("Claude")).unwrap();
+        assert!(
+            store.thread(&person).unwrap().unwrap().comments[1]
+                .ai
+                .is_some()
+        );
+        assert!(
+            store.resolve_as(&person, true, Some("Claude")).is_err(),
+            "a person's thread is theirs to resolve"
+        );
+        store.resolve_as(&ai, true, Some("Claude")).unwrap();
+        assert!(store.thread(&ai).unwrap().unwrap().resolved);
+        assert_eq!(
+            store.thread(&person).unwrap().unwrap().kind,
+            "",
+            "a person's thread has no kind"
         );
     }
 }

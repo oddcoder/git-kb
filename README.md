@@ -144,6 +144,10 @@ A plugin's scripts must follow these rules:
 - They draw again on the `kb-refresh` event, which fires after a live update swaps in a fresh copy of the page. They may also redraw when the reader changes the look: the `data-*` attributes of `<html>`, which a `MutationObserver` can watch.
 - They mark each block they have drawn with `data-rendered`, so that a live update keeps the drawing while its source is the same.
 
+## AI reviewers
+
+Served, `/_ai` is a JSON API for AI agents to review the docs: a guide to it at `/_ai`, and `/llms.txt` naming it. An agent reads the pages, with their numbered lines and the threads on them, and begins threads on exact words it quotes, replies and resolves. Each comment it writes is marked as an AI's, by the agent it names and for the person whose server it is, and shows with a 🤖 AI badge; a thread it begins says what it raises: a concern, a question, a suggestion or a note. An AI resolves only threads an AI began.
+
 ## Developing
 
 ```sh

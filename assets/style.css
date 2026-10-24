@@ -437,3 +437,14 @@ html:has(#show-resolved:checked) .cmt.done { display: inline-block; }
 .all-threads li { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .all-threads li p { margin: 4px 0 0; }
 .all-threads li.resolved { opacity: 0.7; }
+
+/* Comments by an AI, through /_ai: marked, and set apart by a dashed rule; what each thread raises, by kind. */
+.ai-badge { padding: 0 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font-size: 10px;
+            font-weight: 600; }
+.c.by-ai { padding-left: 8px; border-left: 2px dashed color-mix(in srgb, var(--ink-memory) 60%, transparent); }
+.kind-badge { padding: 0 6px; border-radius: 4px; color: var(--page); font-size: 10px; font-weight: 600;
+              text-transform: uppercase; letter-spacing: 0.03em; }
+.kind-concern { background: light-dark(#a8432f, #d9826f); }
+.kind-question { background: var(--ink-control); }
+.kind-suggestion { background: var(--ink-compute); }
+.kind-note { background: var(--ink-gray); }

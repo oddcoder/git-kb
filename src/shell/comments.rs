@@ -372,9 +372,18 @@ impl Shell {
         };
         let mut comments = String::new();
         for comment in &thread.comments {
+            // An AI's comment says so, by the agent and for whom it wrote; a person's does not.
+            let ai = comment.ai.as_ref().map_or(String::new(), |ai| {
+                format!(
+                    " <span class=\"ai-badge\" title=\"Written by an AI, {}, for {}, through /_ai\">🤖 AI</span>",
+                    Self::escape(&ai.agent),
+                    Self::escape(&ai.for_whom)
+                )
+            });
             let _ = write!(
                 comments,
-                "<div class=\"c\"><p class=\"c-head\"><b>{}</b> <span title=\"{}\">{}</span></p><div class=\"c-body\">{}</div></div>",
+                "<div class=\"c{}\"><p class=\"c-head\"><b>{}</b>{ai} <span title=\"{}\">{}</span></p><div class=\"c-body\">{}</div></div>",
+                if comment.ai.is_some() { " by-ai" } else { "" },
                 Self::escape(&comment.author),
                 When(comment.time).date(),
                 When(comment.time).ago(notes.now),
@@ -385,8 +394,19 @@ impl Shell {
             1 => "1 comment".to_string(),
             n => format!("{n} comments"),
         };
+        let kind = if thread.kind.is_empty() {
+            String::new()
+        } else {
+            let mut label = thread.kind.clone();
+            label[..1].make_ascii_uppercase();
+            format!(
+                "<span class=\"kind-badge kind-{}\">{}</span> ",
+                Self::escape(&thread.kind),
+                Self::escape(&label)
+            )
+        };
         format!(
-            "<details class=\"thread{resolved}\" id=\"t-{id}\"{open}><summary>{who} · {count}{state}</summary>{on}{comments}{answer}</details>",
+            "<details class=\"thread{resolved}\" id=\"t-{id}\"{open}><summary>{kind}{who} · {count}{state}</summary>{on}{comments}{answer}</details>",
             resolved = if thread.resolved { " resolved" } else { "" },
             id = Self::escape(&thread.id),
             open = if thread.resolved { "" } else { " open" },
@@ -416,6 +436,7 @@ mod tests {
             lines,
             quote: "The quoted line.".into(),
             snippet: Snippet::default(),
+            kind: String::new(),
             resolved,
             comments: bodies
                 .iter()
@@ -424,6 +445,7 @@ mod tests {
                     email: "ada@x".into(),
                     time: 0,
                     body: (*b).into(),
+                    ai: None,
                 })
                 .collect(),
         }
