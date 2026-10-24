@@ -8,7 +8,8 @@ import { $, $$ } from './dom';
 
 // The parts that may differ, each with the part it follows, for one the page did not have before, as the column of
 // comments when the first is begun.
-const PARTS: [string, string][] = [['.side', ''], ['main.page', ''], ['.layout > .rail', 'main.page']];
+const PARTS: [string, string][] = [['.side', ''], ['main.page', ''], ['.layout > .rail', 'main.page'],
+  ['.layout > .edge-rail', '.layout > .rail']];
 
 function busy(): boolean {
   const typing = $$<HTMLTextAreaElement>('textarea').some((t) => t.value.trim() || t === document.activeElement);

@@ -3,7 +3,7 @@
 // is in the page's head. Double-clicking an edge puts back its default.
 import { $, stored } from './dom';
 
-type Layout = Partial<Record<'side' | 'width' | 'left', number | null>>;
+type Layout = Partial<Record<'side' | 'rail' | 'width' | 'left', number | null>>;
 const root = document.documentElement;
 // Only numbers are kept, so a value from an older layout, or one edited by hand, cannot break the page.
 const KEY = 'git-kb-layout';
@@ -25,6 +25,7 @@ const kept = load();
 px('--text-width', kept.width);
 px('--text-left', kept.left);
 if (kept.side === 0) root.dataset.side = 'hidden'; else px('--side-width', kept.side);
+if (kept.rail === 0) root.dataset.rail = 'hidden'; else px('--rail-width', kept.rail);
 if (Number.isFinite(kept.left)) root.dataset.placed = '';
 
 const SIDE = { min: 160, max: 520, close: 110 };
@@ -61,13 +62,14 @@ function hook(): void {
   const column = $('main.page');
   const columnBox = () => column?.getBoundingClientRect() ?? new DOMRect();
   // The text's own column of the layout: from the sidebar's right, or the layout's left when it is closed, to the
-  // layout's right.
+  // comments' left, or the layout's right when there are none or they are closed.
   const cell = () => {
     const layout = column?.parentElement?.getBoundingClientRect() ?? new DOMRect(0, 0, innerWidth);
-    const side = $('.side');
-    const open = side && getComputedStyle(side).display !== 'none';
-    const left = open ? side.getBoundingClientRect().right : layout.left;
-    return { left, width: layout.right - left };
+    const shown = (e: HTMLElement | null): e is HTMLElement => !!e && getComputedStyle(e).display !== 'none';
+    const side = $('.side'), rail = $('.layout > .rail');
+    const left = shown(side) ? side.getBoundingClientRect().right : layout.left;
+    const right = shown(rail) ? rail.getBoundingClientRect().left : layout.right;
+    return { left, width: right - left };
   };
   const room = () => cell().width;
   const offsetInRoom = () => columnBox().left - cell().left;
@@ -93,6 +95,31 @@ function hook(): void {
         width = null;
       },
       reset: () => { delete root.dataset.side; px('--side-width', null); save({ side: null }); },
+    });
+  }
+
+  // The comments bar, the same from the right: dragged narrower than SIDE.close it closes, leaving its edge at the
+  // right to drag it open again.
+  const railEdge = $('.edge-rail');
+  if (railEdge) {
+    let width: number | null = null;
+    draggable(railEdge, {
+      begin: () => ({}),
+      move: (_dx, _start, x) => {
+        width = Math.min(SIDE.max + 200, innerWidth - x);
+        if (width < SIDE.close) {
+          root.dataset.rail = 'hidden';
+        } else {
+          delete root.dataset.rail;
+          px('--rail-width', Math.max(SIDE.min + 60, width));
+        }
+      },
+      done: () => {
+        if (width == null) return;
+        save({ rail: width < SIDE.close ? 0 : Math.round(Math.max(SIDE.min + 60, width)) });
+        width = null;
+      },
+      reset: () => { delete root.dataset.rail; px('--rail-width', null); save({ rail: null }); },
     });
   }
 

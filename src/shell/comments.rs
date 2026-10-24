@@ -202,7 +202,7 @@ impl Shell {
             ""
         };
         format!(
-            "<aside class=\"rail\" aria-label=\"Comments\"><div class=\"rail-head\"><h2>Comments</h2>{all}{show}</div>{sync}{composer}{empty}{cards}</aside>\n"
+            "<aside class=\"rail\" aria-label=\"Comments\"><div class=\"rail-head\"><h2>Comments</h2>{all}{show}</div>{sync}{composer}{empty}{cards}</aside>\n<div class=\"edge edge-rail\" title=\"Drag to size the comments, or close them; double-click for the default\"></div>\n"
         )
     }
 
