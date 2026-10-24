@@ -1420,7 +1420,7 @@ mod tests {
         let site = Site::of(git.top().join("docs"));
         let page = site.get("/docs/a.md").await.2;
         assert!(
-            page.contains(r#"<div class="blk ">"#) && page.contains("· T · "),
+            page.contains(r#"<div class="blk " data-lines="#) && page.contains("· T · "),
             "{page}"
         );
         assert!(
@@ -1432,7 +1432,7 @@ mod tests {
             "the card shows how it changed: {page}"
         );
         assert!(
-            page.contains(r#"<div class="blk new"><button class="blame""#)
+            page.contains(r#"<div class="blk new" data-lines="4-5"><button class="blame""#)
                 && page.contains(">not committed yet</button>"),
             "{page}"
         );

@@ -18,17 +18,20 @@ function busy(): boolean {
   return typing || !!card || choosing || document.documentElement.classList.contains('dragging-layout');
 }
 
-// Where the reader is: the place on the page of the first block in view, and how far down the screen it sits.
-interface Place { index: number; top: number }
-const blocks = () => $$('.p-page > *, .p-source > *');
+// Where the reader is: the first block in view, by the lines of the text it holds, as each block in the margin and
+// each line of the source says, and how far down the screen it sits; so that an edit above it does not move it.
+interface Place { line: number; source: boolean; top: number }
+const firstLine = (b: HTMLElement) => Number((b.dataset.lines ?? '0').split('-')[0]);
 function where(): Place | null {
-  const all = blocks();
-  const index = all.findIndex((b) => b.getBoundingClientRect().bottom > 64);
-  return index < 0 ? null : { index, top: all[index].getBoundingClientRect().top };
+  const first = $$('.blk[data-lines], .src-line').find((b) => b.getBoundingClientRect().bottom > 64);
+  return first ? { line: firstLine(first), source: first.matches('.src-line'), top: first.getBoundingClientRect().top } : null;
 }
 function stay(at: Place | null): void {
-  const block = at && blocks()[at.index];
-  if (block) scrollBy(0, block.getBoundingClientRect().top - at.top);
+  if (!at) return;
+  const all = $$(at.source ? '.src-line' : '.blk[data-lines]');
+  const same = all.find((b) => { const [a, z] = (b.dataset.lines ?? '').split('-').map(Number); return a <= at.line && at.line < z; })
+    ?? all.find((b) => firstLine(b) >= at.line);
+  if (same) scrollBy(0, same.getBoundingClientRect().top - at.top);
 }
 
 function swap(fresh: Document): void {

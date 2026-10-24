@@ -11,14 +11,17 @@ use std::sync::OnceLock;
 use pulldown_cmark::{
     CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd, html,
 };
-use syntect::html::{ClassStyle, ClassedHTMLGenerator};
-use syntect::parsing::SyntaxSet;
+use syntect::html::{ClassStyle, ClassedHTMLGenerator, line_tokens_to_classed_spans};
+use syntect::parsing::{ParseState, ScopeStack, ScopeStackOp, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
 use crate::plugins::{self, Plugins};
 
 /// The syntaxes highlighter is loaded once and shared by every renderer.
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+
+/// Code is marked with its syntax's scopes as classes, `hl-keyword` and the like, for a style sheet to color.
+const CLASSES: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "hl-" };
 
 /// A page rendered: its HTML, and what is known of it from its headings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +129,39 @@ pub type Elsewhere<'a> = &'a dyn Fn(&str, &str) -> Option<(String, usize, String
 pub struct Mark {
     pub class: &'static str,
     pub html: String,
+}
+
+impl Mark {
+    /// A marked block's wrapper, holding its mark, with the lines of the text it holds, for what follows the text,
+    /// as live.js, to find it again.
+    fn wrapper<'a>(&self, lines: &Range<usize>) -> Event<'a> {
+        Event::Html(
+            format!(
+                "<div class=\"blk {}\" data-lines=\"{}-{}\">{}",
+                self.class, lines.start, lines.end, self.html
+            )
+            .into(),
+        )
+    }
+}
+
+/// Where each line of a text starts, to tell which lines a range of its bytes spans.
+struct Lines(Vec<usize>);
+
+impl Lines {
+    fn of(text: &str) -> Self {
+        Self(
+            std::iter::once(0)
+                .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+                .collect(),
+        )
+    }
+
+    /// The lines a range of the text spans, from 0, its last not among them.
+    fn spanned(&self, range: &Range<usize>) -> Range<usize> {
+        let line = |offset: usize| self.0.partition_point(|&s| s <= offset).saturating_sub(1);
+        line(range.start)..line(range.end.saturating_sub(1).max(range.start)) + 1
+    }
 }
 
 /// The mark for the block at a range of a page's text, if it has one.
@@ -252,15 +288,22 @@ impl Renderer {
             .collect()
     }
 
-    /// A page's Markdown, highlighted, as its source is shown beside it.
+    /// A page's Markdown, highlighted, as its source is shown beside it: each line a span of its own, with its
+    /// number, from 0, as `data-lines="i-j"`, so that the source can be commented on by line as the page is by
+    /// block.
     #[must_use]
     pub fn source(&self, markdown: &str) -> String {
-        let code = Self::highlight("md", markdown).unwrap_or_else(|| {
-            markdown
-                .replace('&', "&amp;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;")
-        });
+        let lines = Self::highlight_lines("md", markdown)
+            .unwrap_or_else(|| LinesWithEndings::from(markdown).map(Self::escape).collect());
+        let mut code = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            let _ = write!(
+                code,
+                "<span class=\"src-line\" data-lines=\"{i}-{}\">{}</span>",
+                i + 1,
+                line.trim_end_matches('\n')
+            );
+        }
         format!("<pre class=\"source\"><code>{code}</code></pre>\n")
     }
 
@@ -444,6 +487,7 @@ impl Renderer {
             &own
         };
         let ranges = self.block_ranges(markdown);
+        let lines = Lines::of(markdown);
         let (mut depth, mut block, mut open) = (0usize, 0usize, false);
         let mut ids = Ids::default();
         let mut headings = vec![];
@@ -451,10 +495,10 @@ impl Renderer {
         let mut events = Parser::new_ext(markdown, self.options);
         while let Some(event) = events.next() {
             if depth == 0 && matches!(event, Event::Start(_) | Event::Rule | Event::Html(_)) {
-                if let Some(mark) = ranges.get(block).cloned().and_then(|r| opts.gutter?(r)) {
-                    out.push(Event::Html(
-                        format!("<div class=\"blk {}\">{}", mark.class, mark.html).into(),
-                    ));
+                if let Some(range) = ranges.get(block).cloned()
+                    && let Some(mark) = opts.gutter.and_then(|gutter| gutter(range.clone()))
+                {
+                    out.push(mark.wrapper(&lines.spanned(&range)));
                     open = true;
                 }
                 block += 1;
@@ -725,7 +769,6 @@ impl Renderer {
     /// is known by its name or its files' extension, as `rust` or `rs`.
     #[must_use]
     pub fn highlight(lang: &str, code: &str) -> Option<String> {
-        const CLASSES: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "hl-" };
         let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
         let syntax = syntaxes.find_syntax_by_token(lang)?;
         let mut html = ClassedHTMLGenerator::new_with_class_style(syntax, syntaxes, CLASSES);
@@ -733,6 +776,32 @@ impl Renderer {
             html.parse_html_for_line_which_includes_newline(line).ok()?;
         }
         Some(html.finalize())
+    }
+
+    /// The same, line by line: each line's spans closed at its end and opened again on the next, so that each
+    /// line stands alone.
+    fn highlight_lines(lang: &str, code: &str) -> Option<Vec<String>> {
+        let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+        let syntax = syntaxes.find_syntax_by_token(lang)?;
+        let mut state = ParseState::new(syntax);
+        let mut stack = ScopeStack::new();
+        let mut lines = vec![];
+        for line in LinesWithEndings::from(code) {
+            // The scopes open at the line's start, opened again, as an empty push of each writes them.
+            let reopen: Vec<_> = stack
+                .as_slice()
+                .iter()
+                .map(|s| (0, ScopeStackOp::Push(*s)))
+                .collect();
+            let (open, _) =
+                line_tokens_to_classed_spans("", &reopen, CLASSES, &mut ScopeStack::new()).ok()?;
+            let ops = state.parse_line(line, syntaxes).ok()?;
+            let (html, _) = line_tokens_to_classed_spans(line, &ops, CLASSES, &mut stack).ok()?;
+            // A line's newline is its end, which its own span stands for.
+            let html = html.replace('\n', "");
+            lines.push(format!("{open}{html}{}", "</span>".repeat(stack.len())));
+        }
+        Some(lines)
     }
 
     /// A fence's language: the first word of its info, so that what follows it, as in
@@ -894,8 +963,8 @@ mod tests {
             })
             .html;
         for wanted in [
-            "<div class=\"blk x\"><i>0</i>\n<h1 id=\"title\">Title</h1>\n</div>",
-            "<div class=\"blk x\"><i>9</i>\n<p>One.</p>\n</div>",
+            "<div class=\"blk x\" data-lines=\"0-1\"><i>0</i>\n<h1 id=\"title\">Title</h1>\n</div>",
+            "<div class=\"blk x\" data-lines=\"2-3\"><i>9</i>\n<p>One.</p>\n</div>",
             "<li>b</li>\n</ul>\n</div>",
             "<i>",
         ] {
@@ -907,11 +976,22 @@ mod tests {
     #[test]
     fn a_page_s_source_is_its_markdown_highlighted() {
         let source = Renderer::new().source("# Title\n\n<b> & *it*\n");
+        let source = source.trim_end();
         assert!(
             source.starts_with(r#"<pre class="source"><code>"#),
             "{source}"
         );
         assert!(source.contains("hl-"), "highlighted: {source}");
+        assert!(
+            source.contains(r#"<span class="src-line" data-lines="1-2">"#)
+                && !source.contains('\n'),
+            "each line numbered: {source}"
+        );
+        assert_eq!(
+            source.matches("<span").count(),
+            source.matches("</span>").count(),
+            "each line stands alone: {source}"
+        );
         assert!(
             source.contains("&lt;") && source.contains("&amp;") && !source.contains("<b>"),
             "escaped: {source}"

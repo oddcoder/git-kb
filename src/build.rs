@@ -1409,7 +1409,7 @@ mod tests {
                 && margin.contains("Everything this commit changed"),
             "{margin}"
         );
-        assert!(read(Path::new("docs/a.html")).contains(r#"<div class="blk new">"#));
+        assert!(read(Path::new("docs/a.html")).contains(r#"<div class="blk new" data-lines="#));
     }
 
     #[test]

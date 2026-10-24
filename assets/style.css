@@ -283,6 +283,14 @@ pre.source code { white-space: pre-wrap; overflow-wrap: anywhere; }
   background: var(--page); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
 #v-source:checked + .view-switch span:first-child { background: none; color: var(--muted); box-shadow: none; }
 
+/* The source, by line, numbered. */
+pre.source { padding-left: 0; }
+.src-line { display: block; padding-left: 4.2em; text-indent: -3.2em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.src-line::before { counter-increment: line; content: counter(line); display: inline-block; width: 2.4em; margin-right: 0.8em;
+                    text-align: right; color: var(--ink-gray); opacity: 0.7; text-indent: 0; user-select: none; }
+pre.source code { counter-reset: line; }
+.src-line:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
 /* A page's margin: beside each block, on hover, when it last changed; clicked, a card of how it changed. A block
    not committed yet is marked so. */
 .blk { position: relative; }
