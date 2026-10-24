@@ -379,3 +379,8 @@ html:has(#show-resolved:checked) .cmt.done { display: inline-block; }
 .composer { margin-bottom: 10px; border-color: var(--accent); }
 .rail .sync { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 12px; }
 .rail .sync .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.all-comments { margin-left: auto; font-size: 12px; }
+.all-threads { padding-left: 0; list-style: none; }
+.all-threads li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.all-threads li p { margin: 4px 0 0; }
+.all-threads li.resolved { opacity: 0.7; }

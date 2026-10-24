@@ -231,6 +231,9 @@ impl Server {
         if path == "/_graph" {
             return self.graph_page(query.unwrap_or(""));
         }
+        if path == "/_comments" {
+            return self.comments_page();
+        }
         let (snapshot, rest) = if let Some(rest) = path.strip_prefix("/docs") {
             if rest.is_empty() {
                 return Redirect::permanent("/docs/").into_response();
@@ -261,6 +264,30 @@ impl Server {
             Ok(view) => view.answer(decoded.trim_start_matches('/'), path, query),
             Err(e) => self.failed(&e),
         }
+    }
+
+    /// Every thread of the site, as a page.
+    fn comments_page(&self) -> Response {
+        let Some(store) = &self.comments else {
+            return self.missing("The site is not in a git repository, so it has no comments.");
+        };
+        let threads = match store.threads() {
+            Ok(threads) => threads,
+            Err(e) => return self.failed(&e),
+        };
+        let view = match self.view(None) {
+            Ok(view) => view,
+            Err(e) => return self.failed(&e),
+        };
+        let pages = view.pages();
+        let nav = Nav {
+            pages: &pages,
+            current: Path::new(""),
+            headings: &[],
+            graph: None,
+        };
+        let body = view.shell.comments_page(&threads);
+        Html(view.shell.page(Path::new(""), "", "Comments", &body, &nav)).into_response()
     }
 
     /// A comment written from a page's form: a thread begun, replied to, resolved or reopened; and then back to
@@ -1810,5 +1837,14 @@ mod tests {
         );
         let (status, _) = site.post("/_comments/sync", "cross-site", "").await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn every_thread_is_listed_on_a_page_of_its_own() {
+        let git = commented("Why two?");
+        let page = Site::of(git.top().join("docs")).get("/_comments").await.2;
+        assert!(page.contains("<title>Comments · docs</title>"), "{page}");
+        assert!(page.contains("1 open, 0 resolved, on 1 pages"), "{page}");
+        assert!(page.contains("<b>Ada</b>: Why two?"), "{page}");
     }
 }

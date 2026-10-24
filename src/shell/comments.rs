@@ -196,8 +196,13 @@ impl Shell {
         };
         let composer = self.composer(notes);
         let sync = self.sync_form(notes);
+        let all = if self.writes() {
+            "<a class=\"all-comments\" href=\"/_comments\">All comments</a>"
+        } else {
+            ""
+        };
         format!(
-            "<aside class=\"rail\" aria-label=\"Comments\"><div class=\"rail-head\"><h2>Comments</h2>{show}</div>{sync}{composer}{empty}{cards}</aside>\n"
+            "<aside class=\"rail\" aria-label=\"Comments\"><div class=\"rail-head\"><h2>Comments</h2>{all}{show}</div>{sync}{composer}{empty}{cards}</aside>\n"
         )
     }
 
@@ -226,6 +231,68 @@ impl Shell {
             back = Self::escape(&Self::served(&notes.page)),
             last = last,
         )
+    }
+
+    /// Every thread of the site, as a page's body: by page, the open first, each its first comment and a link to
+    /// it on its page.
+    #[must_use]
+    pub fn comments_page(&self, threads: &[Thread]) -> String {
+        let mut by_page: std::collections::BTreeMap<&Path, Vec<&Thread>> =
+            std::collections::BTreeMap::new();
+        for thread in threads {
+            by_page
+                .entry(thread.page.as_path())
+                .or_default()
+                .push(thread);
+        }
+        let open = threads.iter().filter(|t| !t.resolved).count();
+        let mut out = format!(
+            "<h1>Comments</h1>\n<p class=\"meta\">{open} open, {} resolved, on {} pages</p>\n",
+            threads.len() - open,
+            by_page.len()
+        );
+        let now = When::now().0;
+        for (page, mut threads) in by_page {
+            threads.sort_by_key(|t| {
+                (
+                    t.resolved,
+                    std::cmp::Reverse(t.comments.last().map_or(0, |c| c.time)),
+                )
+            });
+            let href = Self::served(page);
+            let _ = write!(
+                out,
+                "<h2><a href=\"{}\">{}</a></h2>\n<ul class=\"all-threads\">",
+                Self::escape(&href),
+                Self::escape(&page.to_string_lossy())
+            );
+            for thread in threads {
+                let Some(first) = thread.comments.first() else {
+                    continue;
+                };
+                let _ = write!(
+                    out,
+                    concat!(
+                        "<li class=\"{class}\"><a href=\"{href}#t-{id}\">{quote}</a>",
+                        "<p><b>{who}</b>: {body}</p><p class=\"muted\">{count} · {when}{resolved}</p></li>"
+                    ),
+                    class = if thread.resolved { "resolved" } else { "open" },
+                    href = Self::escape(&href),
+                    id = Self::encode_id(&thread.id),
+                    quote = Self::escape(&thread.quote),
+                    who = Self::escape(&first.author),
+                    body = Self::escape(first.body.lines().next().unwrap_or("")),
+                    count = match thread.comments.len() {
+                        1 => "1 comment".to_string(),
+                        n => format!("{n} comments"),
+                    },
+                    when = When(thread.comments.last().map_or(0, |c| c.time)).ago(now),
+                    resolved = if thread.resolved { " · resolved" } else { "" },
+                );
+            }
+            out.push_str("</ul>\n");
+        }
+        out
     }
 
     /// The box to begin a thread in, on the lines asked for, when one is being begun here.
@@ -332,6 +399,8 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use gix::ObjectId;
 
     use super::*;
@@ -535,5 +604,32 @@ mod tests {
         );
         let built = Shell::new("Site".into(), Links::Built).rail(&notes);
         assert!(!built.contains("/_comments/sync"), "{built}");
+    }
+
+    #[test]
+    fn every_thread_is_listed_by_page_the_open_first() {
+        let mut other = thread("b1", 0..1, false, &["On b"]);
+        other.page = PathBuf::from("arch/b.md");
+        let threads = [
+            thread("done", 2..3, true, &["Old"]),
+            thread("open", 4..5, false, &["New <one>", "reply"]),
+            other,
+        ];
+        let page = shell().comments_page(&threads);
+        assert!(
+            page.contains("1 resolved") && page.contains("2 open") && page.contains("on 2 pages"),
+            "{page}"
+        );
+        let (open, done) = (page.find("#t-open").unwrap(), page.find("#t-done").unwrap());
+        assert!(open < done, "{page}");
+        assert!(
+            page.contains(r#"<a href="/docs/a.html#t-open">The quoted line.</a>"#),
+            "{page}"
+        );
+        assert!(page.contains("<b>Ada</b>: New &lt;one&gt;"), "{page}");
+        assert!(
+            page.contains(r#"<h2><a href="/docs/arch/b.html">arch/b.md</a></h2>"#),
+            "{page}"
+        );
     }
 }
