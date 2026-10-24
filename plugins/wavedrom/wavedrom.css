@@ -1,0 +1,6 @@
+/* A WaveDrom diagram on the figure's paper, scaled down to fit; its source shows only until it is drawn, or when it
+   cannot be. */
+.kb-wavedrom { max-width: 100%; }
+.kb-wavedrom svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+.kb-stage pre.kb-wavedrom-source { margin: 0; background: none; }
+.kb-wavedrom.drawn pre.kb-wavedrom-source { display: none; }

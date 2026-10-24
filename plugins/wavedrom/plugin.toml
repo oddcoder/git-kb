@@ -1,0 +1,15 @@
+name = "wavedrom"
+description = "WaveDrom timing diagrams, register bitfields and logic circuits, drawn in the browser"
+blocks = ["wavedrom"]
+figure = true
+highlight = "json"
+# The source is WaveJSON, read as JSON5, not run as code, so a diagram in a comment cannot run a script.
+stage = '<div class="kb-wavedrom"><pre class="kb-wavedrom-source">{source.html}</pre></div>'
+head = [
+  '<script src="https://cdn.jsdelivr.net/npm/json5@2/dist/index.min.js" defer></script>',
+  '<script src="https://cdn.jsdelivr.net/npm/wavedrom@3/skins/default.js" defer></script>',
+  '<script src="https://cdn.jsdelivr.net/npm/wavedrom@3/skins/narrow.js" defer></script>',
+  '<script src="https://cdn.jsdelivr.net/npm/wavedrom@3/wavedrom.min.js" defer></script>',
+]
+scripts = ["wavedrom.js"]
+styles = ["wavedrom.css"]

@@ -82,6 +82,20 @@ const BUILT_IN: &[(&str, &str, Files)] = &[
             ),
         ],
     ),
+    (
+        "wavedrom",
+        include_str!("../plugins/wavedrom/plugin.toml"),
+        &[
+            (
+                "wavedrom.js",
+                include_bytes!(concat!(env!("OUT_DIR"), "/plugins/wavedrom/wavedrom.js")),
+            ),
+            (
+                "wavedrom.css",
+                include_bytes!("../plugins/wavedrom/wavedrom.css"),
+            ),
+        ],
+    ),
 ];
 
 /// The built-in plugins' names.
@@ -877,6 +891,24 @@ pub(crate) mod tests {
         let head = plugins.head(&[&html], "/");
         assert!(
             head.contains("mermaid.min.js") && head.contains("/_plugins/mermaid/mermaid.css"),
+            "{head}"
+        );
+    }
+
+    #[test]
+    fn wavedrom_diagrams_are_read_as_data_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = load(&dir, &[("wavedrom", toml::Table::new())]).unwrap();
+        let wavedrom = plugins.block("wavedrom").unwrap();
+        let html = plugins.render_block(wavedrom, "{signal: [{name: '<clk>', wave: 'p...'}]}");
+        assert!(
+            html.contains(r#"<pre class="kb-wavedrom-source">{signal: [{name: '&lt;clk&gt;', wave: 'p...'}]}</pre>"#),
+            "{html}"
+        );
+        assert!(!html.contains("<script>"), "no source is run: {html}");
+        let head = plugins.head(&[&html], "/");
+        assert!(
+            head.contains("json5") && head.contains("wavedrom.min.js"),
             "{head}"
         );
     }
