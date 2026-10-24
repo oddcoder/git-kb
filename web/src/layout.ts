@@ -72,6 +72,9 @@ function hook(): void {
     return { left, width: right - left };
   };
   const room = () => cell().width;
+  // A column beside the text grows only as far as leaves the text TEXT.min.
+  const widthOf = (e: HTMLElement | null) => (e && getComputedStyle(e).display !== 'none' ? e.getBoundingClientRect().width : 0);
+  const most = (e: HTMLElement | null) => widthOf(e) + room() - TEXT.min;
   const offsetInRoom = () => columnBox().left - cell().left;
 
   // The sidebar: dragged narrower than SIDE.close it closes, leaving its edge at the left to drag it open again.
@@ -79,9 +82,9 @@ function hook(): void {
   if (side) {
     let width: number | null = null;
     draggable(side, {
-      begin: () => ({}),
-      move: (_dx, _start, x) => {
-        width = Math.min(SIDE.max, x);
+      begin: () => ({ most: most($('.side')) }),
+      move: (_dx, start, x) => {
+        width = Math.min(SIDE.max, start.most, x);
         if (width < SIDE.close) {
           root.dataset.side = 'hidden';
         } else {
@@ -104,9 +107,9 @@ function hook(): void {
   if (railEdge) {
     let width: number | null = null;
     draggable(railEdge, {
-      begin: () => ({}),
-      move: (_dx, _start, x) => {
-        width = Math.min(SIDE.max + 200, innerWidth - x);
+      begin: () => ({ most: most($('.layout > .rail')) }),
+      move: (_dx, start, x) => {
+        width = Math.min(SIDE.max + 200, start.most, innerWidth - x);
         if (width < SIDE.close) {
           root.dataset.rail = 'hidden';
         } else {
