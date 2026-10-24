@@ -451,8 +451,9 @@ html:has(#show-resolved:checked) .cmt.done { display: inline-block; }
 .rail .resolve { margin-top: 6px; }
 .rail .resolve button { background: none; color: var(--muted); }
 .composer { margin-bottom: 10px; border-color: var(--accent); }
-.rail .sync { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 12px; }
-.rail .sync .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail .sync { display: flex; align-items: baseline; gap: 8px; margin: 0 0 12px; font-size: 12px; }
+/* All of what the last sync said, on as many lines as it takes: a failure's reason is what matters in it. */
+.rail .sync .muted { min-width: 0; overflow-wrap: anywhere; }
 .all-comments { margin-left: auto; font-size: 12px; }
 .all-threads { padding-left: 0; list-style: none; }
 .all-threads li { padding: 10px 0; border-bottom: 1px solid var(--line); }
