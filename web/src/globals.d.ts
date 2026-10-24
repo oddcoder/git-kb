@@ -1,5 +1,6 @@
 // What the libraries plugins load give the page.
 interface Window {
+  MathJax?: { typesetPromise?: (elements?: Element[]) => Promise<void> };
   mermaid?: {
     initialize(config: Record<string, unknown>): void;
     render(id: string, source: string): Promise<{ svg: string }>;

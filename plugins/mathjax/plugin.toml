@@ -1,0 +1,11 @@
+name = "mathjax"
+description = "Math, as $...$ and $$...$$, set by MathJax in the browser"
+math = true
+inline = '<span class="math">\({source.html}\)</span>'
+display = '<span class="math display">\[{source.html}\]</span>'
+# MathJax looks only in the spans math is written in, so that a dollar elsewhere is left alone.
+head = [
+  '''<script>window.MathJax={tex:{inlineMath:[['\\(','\\)']],displayMath:[['\\[','\\]']]},options:{ignoreHtmlClass:'tex2jax_ignore|layout',processHtmlClass:'math'},svg:{fontCache:'global'}};</script>''',
+  '<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" id="MathJax-script" defer></script>',
+]
+scripts = ["mathjax.js"]

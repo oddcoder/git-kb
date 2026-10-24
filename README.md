@@ -87,13 +87,14 @@ code = "system"                   # the code font: system, menlo or courier
 
 ## Plugins
 
-Plugins render what Markdown alone does not: fenced blocks such as ```` ```tikz ````. Only the plugins `git-kb.toml` names are used; without a `git-kb.toml`, every built-in one. A page loads a plugin's scripts only if it uses that plugin. `git kb plugins` lists them.
+Plugins render what Markdown alone does not: fenced blocks such as ```` ```tikz ````, and math such as `$x^2$`. Only the plugins `git-kb.toml` names are used; without a `git-kb.toml`, every built-in one. A page loads a plugin's scripts only if it uses that plugin. `git kb plugins` lists them.
 
 | Plugin | Renders | How |
 |---|---|---|
 | `tikz` | ```` ```tikz ```` | TikZJax compiles the diagram in the browser, with a preamble of shared styles, and draws it in the theme's colors |
 | `mermaid` | ```` ```mermaid ```` | Mermaid draws the diagram in the browser, in the page's scheme |
 | `wavedrom` | ```` ```wavedrom ```` | WaveDrom draws timing diagrams, register bitfields and logic circuits in the browser, in the theme's colors |
+| `mathjax` | `$...$`, `$$...$$` | MathJax sets the math in the browser |
 
 A diagram plugin's blocks are *figures*: each shows its source under a bar, and can be clicked to zoom.
 
@@ -107,6 +108,7 @@ A plugin is a folder with a `plugin.toml`, named in `git-kb.toml` by its path. I
 name = "graphviz"
 description = "Graphviz graphs, laid out by the dot command"
 blocks = ["dot"]            # the fence languages it renders
+math = false                # whether it renders $...$ and $$...$$; only one plugin may
 figure = true               # whether its blocks are figures: with their source under a bar, zoomable
 highlight = "text"          # how its source is highlighted, under the bar
 
@@ -125,7 +127,7 @@ font = "Helvetica"
 # preamble = "preamble.tex"
 ```
 
-These placeholders are filled in `stage`, `head` and `command`:
+These placeholders are filled in `stage`, `inline`, `display`, `head` and `command`:
 - `{name}`: an option's value.
 - `{source.html}`: the block's source, escaped for HTML.
 - `{source.raw}`: the source as it is, for inside a `<script>`.

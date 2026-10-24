@@ -1,4 +1,4 @@
-//! Plugins: what renders the blocks that Markdown alone does not, such as `` ```tikz `` diagrams. Each is a folder
+//! Plugins: what renders the blocks and math that Markdown alone does not, such as `` ```tikz `` diagrams or $x^2$. Each is a folder
 //! with a plugin.toml; the built-in ones are in git-kb/plugins and in the binary, and a repository can add its own
 //! by path in git-kb.toml. Only the plugins git-kb.toml names are used; without a git-kb.toml, every built-in one.
 //!
@@ -6,11 +6,14 @@
 //! name = "mermaid"
 //! description = "Mermaid diagrams"
 //! blocks = ["mermaid"]         # the fence languages it renders
+//! math = false                 # whether it renders $...$ and $$...$$; one plugin may
 //! figure = true                # whether its blocks are figures: with their source under a bar, zoomable
 //! highlight = "text"           # the language their source is highlighted as, under the bar
 //!
 //! # Rendered in the browser: the HTML each block becomes, which the plugin's scripts then draw.
 //! stage = '<pre class="mermaid">{source.html}</pre>'
+//! inline = '...'               # for math: what $...$ and $$...$$ become
+//! display = '...'
 //! head = ['<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" defer></script>']
 //! scripts = ["mermaid.js"]     # its own files, loaded after the page's, on pages that use it
 //! styles = ["mermaid.css"]
@@ -25,7 +28,7 @@
 //! preamble = "preamble.tex"
 //! ```
 //!
-//! In stage, head and command, `{name}` is an option's value, escaped for HTML; `{source.html}` is the block's
+//! In stage, inline, display, head and command, `{name}` is an option's value, escaped for HTML; `{source.html}` is the block's
 //! source, escaped; `{source.raw}` is the source as it is, for a `<script>` (a block whose source would close the
 //! script is shown as code instead); and `{assets}` is where the plugin's own files are served.
 //!
@@ -96,6 +99,14 @@ const BUILT_IN: &[(&str, &str, Files)] = &[
             ),
         ],
     ),
+    (
+        "mathjax",
+        include_str!("../plugins/mathjax/plugin.toml"),
+        &[(
+            "mathjax.js",
+            include_bytes!(concat!(env!("OUT_DIR"), "/plugins/mathjax/mathjax.js")),
+        )],
+    ),
 ];
 
 /// The built-in plugins' names.
@@ -113,8 +124,13 @@ pub fn describe(name: &str) -> String {
     let Ok(m) = toml::from_str::<Manifest>(manifest) else {
         return String::new();
     };
-    let blocks: Vec<String> = m.blocks.iter().map(|b| format!("```{b}")).collect();
-    format!("{} ({})", m.description, blocks.join(", "))
+    let what: Vec<String> = m
+        .blocks
+        .iter()
+        .map(|b| format!("```{b}"))
+        .chain(m.math.then(|| "$math$".to_string()))
+        .collect();
+    format!("{} ({})", m.description, what.join(", "))
 }
 
 /// A plugin.toml.
@@ -127,11 +143,17 @@ struct Manifest {
     #[serde(default)]
     blocks: Vec<String>,
     #[serde(default)]
+    math: bool,
+    #[serde(default)]
     figure: bool,
     #[serde(default)]
     highlight: Option<String>,
     #[serde(default)]
     stage: Option<String>,
+    #[serde(default)]
+    inline: Option<String>,
+    #[serde(default)]
+    display: Option<String>,
     #[serde(default)]
     head: Vec<String>,
     #[serde(default)]
@@ -152,9 +174,12 @@ pub struct Plugin {
     pub name: String,
     pub description: String,
     pub blocks: Vec<String>,
+    pub math: bool,
     pub figure: bool,
     highlight: String,
     stage: Option<String>,
+    inline: Option<String>,
+    display: Option<String>,
     head: Vec<String>,
     scripts: Vec<String>,
     styles: Vec<String>,
@@ -191,7 +216,7 @@ impl Plugins {
     ///
     /// # Errors
     ///
-    /// When a plugin cannot be loaded, or two render the same blocks.
+    /// When a plugin cannot be loaded, or two render the same blocks, or both math.
     pub fn load(
         config: &Config,
         file: Option<&Path>,
@@ -213,6 +238,14 @@ impl Plugins {
         for (name, given) in named {
             let plugin = Plugin::load(&name, given, &config.base)
                 .with_context(|| format!("plugin {name}"))?;
+            if plugin.math
+                && let Some(other) = list.iter().find(|p| p.math)
+            {
+                bail!(
+                    "plugins {} and {name} both render math; use one",
+                    other.name
+                );
+            }
             for lang in &plugin.blocks {
                 if let Some(other) = list.iter().find(|p| p.blocks.contains(lang)) {
                     bail!(
@@ -246,6 +279,29 @@ impl Plugins {
     #[must_use]
     pub fn is_figure(&self, lang: &str) -> bool {
         self.block(lang).is_some_and(|p| p.figure)
+    }
+
+    /// The plugin that renders math, if one does.
+    #[must_use]
+    pub fn math(&self) -> Option<&Plugin> {
+        self.list.iter().find(|p| p.math)
+    }
+
+    /// Math, `$...$` or, `display`, `$$...$$`, as its plugin renders it, marked as that plugin's so that the page
+    /// loads it.
+    #[must_use]
+    pub fn render_math(&self, source: &str, display: bool) -> Option<String> {
+        let plugin = self.math()?;
+        let template = if display {
+            plugin.display.as_deref()
+        } else {
+            plugin.inline.as_deref()
+        }?;
+        Some(format!(
+            r#"<span data-plugin="{}">{}</span>"#,
+            Renderer::escape(&plugin.name),
+            fill(template, plugin, source, "")
+        ))
     }
 
     #[must_use]
@@ -487,9 +543,12 @@ impl Plugin {
             name: m.name,
             description: m.description,
             blocks: m.blocks,
+            math: m.math,
             figure: m.figure,
             highlight: m.highlight.unwrap_or_default(),
             stage: m.stage,
+            inline: m.inline,
+            display: m.display,
             head: m.head,
             scripts: m.scripts,
             styles: m.styles,
@@ -584,7 +643,7 @@ fn clean_svg(out: &str) -> String {
     }
 }
 
-/// The plugins whose blocks are in some HTML, by name.
+/// The plugins whose blocks or math are in some HTML, by name.
 #[must_use]
 pub fn used<'a>(html: &[&'a str]) -> BTreeSet<&'a str> {
     const MARK: &str = r#"data-plugin=""#;
@@ -911,5 +970,34 @@ pub(crate) mod tests {
             head.contains("json5") && head.contains("wavedrom.min.js"),
             "{head}"
         );
+    }
+
+    #[test]
+    fn math_is_set_by_mathjax_in_only_the_spans_it_is_written_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugins = load(&dir, &[("mathjax", toml::Table::new())]).unwrap();
+        assert_eq!(
+            plugins.render_math("a<b", false).unwrap(),
+            r#"<span data-plugin="mathjax"><span class="math">\(a&lt;b\)</span></span>"#
+        );
+        assert_eq!(
+            plugins.render_math("x^2", true).unwrap(),
+            r#"<span data-plugin="mathjax"><span class="math display">\[x^2\]</span></span>"#
+        );
+        let head = plugins.head(&[r#"<span data-plugin="mathjax">"#], "/");
+        assert!(
+            head.contains("processHtmlClass:'math'") && head.contains("tex-svg.js"),
+            "{head}"
+        );
+    }
+
+    #[test]
+    fn only_one_plugin_may_render_math() {
+        let (dir, given) = own(
+            "name = \"other\"\nmath = true\ninline = '{source.html}'\n",
+            &[],
+        );
+        let e = load(&dir, &[("mathjax", toml::Table::new()), ("other", given)]).unwrap_err();
+        assert!(format!("{e:#}").contains("both render math"), "{e:#}");
     }
 }

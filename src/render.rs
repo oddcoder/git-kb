@@ -118,14 +118,17 @@ impl Renderer {
         Self::with_plugins(plugins::get())
     }
 
-    /// The same, with these plugins.
+    /// The same, with these plugins; and of `$...$` as math, when one of them renders math.
     #[must_use]
     pub fn with_plugins(plugins: &'static Plugins) -> Self {
-        let options = Options::ENABLE_TABLES
+        let mut options = Options::ENABLE_TABLES
             | Options::ENABLE_FOOTNOTES
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_HEADING_ATTRIBUTES;
+        if plugins.math().is_some() {
+            options |= Options::ENABLE_MATH;
+        }
         Self { options, plugins }
     }
 
@@ -358,6 +361,7 @@ impl Renderer {
                 }) => {
                     let inner = Self::inside(&mut events);
                     let heading = ids.heading(level, id, &inner);
+                    let inner = inner.into_iter().map(|e| self.math(e)).collect();
                     out.extend(heading.events(classes, attrs, inner));
                     headings.push(heading);
                 }
@@ -388,7 +392,7 @@ impl Renderer {
                     id,
                 })),
                 Event::Html(html) | Event::InlineHtml(html) if safe => out.push(Event::Text(html)),
-                event => out.push(event),
+                event => out.push(self.math(event)),
             }
             if depth == 0 && open {
                 out.push(Event::Html("</div>".into()));
@@ -396,6 +400,21 @@ impl Renderer {
             }
         }
         Page::new(out, headings)
+    }
+
+    /// Math, `$...$` or `$$...$$`, as the math plugin renders it, or as it was written when none does; any other
+    /// event as it is.
+    fn math<'a>(&self, event: Event<'a>) -> Event<'a> {
+        let (math, display) = match &event {
+            Event::InlineMath(math) => (math, false),
+            Event::DisplayMath(math) => (math, true),
+            _ => return event,
+        };
+        let html = self.plugins.render_math(math, display).unwrap_or_else(|| {
+            let dollars = if display { "$$" } else { "$" };
+            Self::escape(&format!("{dollars}{math}{dollars}"))
+        });
+        Event::InlineHtml(html.into())
     }
 
     /// A link's or image's target, or where `moved` says it is now.
@@ -918,5 +937,35 @@ mod tests {
             .map(|s| s.text.clone())
             .collect();
         assert!(text.contains("Words") && !text.contains("secret"), "{text}");
+    }
+
+    #[test]
+    fn math_is_the_math_plugin_s_and_a_dollar_is_a_dollar_without_one() {
+        let config = crate::config::Config {
+            plugins: [("mathjax".to_string(), toml::Table::new())]
+                .into_iter()
+                .collect(),
+            ..crate::config::Config::default()
+        };
+        let plugins =
+            Plugins::load(&config, Some(std::path::Path::new("git-kb.toml")), None).unwrap();
+        let renderer = Renderer::with_plugins(Box::leak(Box::new(plugins)));
+        let html = renderer
+            .render("# Sizes $n$\n\nSo $x^2$ costs\n\n$$2MNK$$\n")
+            .html;
+        assert_eq!(
+            html.matches(r#"data-plugin="mathjax""#).count(),
+            3,
+            "in the heading too: {html}"
+        );
+        assert!(
+            html.contains(r#"<span class="math">\(x^2\)</span>"#),
+            "{html}"
+        );
+        let plain = Renderer::new().render("It costs $5, or $6.").html;
+        assert!(
+            plain.contains("It costs $5, or $6.") && !plain.contains("data-plugin"),
+            "{plain}"
+        );
     }
 }
