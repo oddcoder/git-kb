@@ -1,9 +1,11 @@
-//! Live: what tells open pages that the site has changed, so that they load again. It watches the folder, and
-//! says so when a file of the site is made, changed or removed; not when anything else in the folder is, such
-//! as what `.gitignore` ignores, so a build filling `target/` does not reload every page.
+//! Live: what tells open pages that something they show has changed, so that they load again. It watches the
+//! folder, and says so when a file of the site is made, changed or removed; not when anything else in the folder
+//! is, such as what `.gitignore` ignores, so a build filling `target/` does not reload every page. Given the
+//! folder's repository, it watches its refs too, as a commit, a checkout, a rebase or a pull moves them, or a
+//! comment is written or synced.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Context;
@@ -13,23 +15,41 @@ use tracing::{debug, warn};
 
 use crate::build::Builder;
 
-/// Watches a folder's site, and tells whoever listens when it changes.
+/// What changed: `docs` for the site's files, `git` for the repository's refs, and `pull` for its remotes'
+/// branches, as a fetch or a pull moves them, after which the comments are synced too.
+pub type Change = &'static str;
+
+/// Watches a folder's site, and its repository's refs, telling whoever listens what changes; watching stops when
+/// it is dropped.
 #[derive(Debug)]
 pub struct Live {
-    changes: broadcast::Sender<()>,
-    /// Kept, as watching stops when it is dropped.
     _watcher: RecommendedWatcher,
 }
 
 impl Live {
-    /// Watches the site of a folder, telling `changes` when it changes.
+    /// Watches the site of a folder, and, given its repository's git folder, its HEAD and refs, telling `changes`
+    /// what changes.
     ///
     /// # Errors
     ///
     /// When the folder cannot be watched, or its files cannot be listed.
-    pub fn watch(root: &Path, changes: broadcast::Sender<()>) -> anyhow::Result<Self> {
+    pub fn watch(
+        root: &Path,
+        git: Option<&Path>,
+        changes: broadcast::Sender<Change>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            _watcher: Self::watcher(root, git, changes)?,
+        })
+    }
+
+    fn watcher(
+        root: &Path,
+        git: Option<&Path>,
+        told: broadcast::Sender<Change>,
+    ) -> anyhow::Result<RecommendedWatcher> {
         let files = Mutex::new(Self::files(root)?);
-        let (folder, told) = (root.to_path_buf(), changes.clone());
+        let (folder, repository) = (root.to_path_buf(), git.map(Path::to_path_buf));
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let event = match event {
@@ -37,6 +57,15 @@ impl Live {
                     Ok(_) => return,
                     Err(e) => return warn!("watching: {e}"),
                 };
+                // A ref of the repository moved.
+                if let Some(git) = &repository
+                    && let Some(change) =
+                        event.paths.iter().find_map(|path| Self::of_git(path, git))
+                {
+                    debug!(change, "refs moved");
+                    let _ = told.send(change);
+                    return;
+                }
                 // The site's files as they were and as they are, to tell whether the change is to one of them.
                 let Ok(now) = Self::files(&folder) else {
                     return;
@@ -54,22 +83,22 @@ impl Live {
                 if let Some(path) = touched {
                     debug!(path = %path.display(), "changed");
                     // No one may be listening, which is no matter.
-                    let _ = told.send(());
+                    let _ = told.send("docs");
                 }
             })?;
         watcher
             .watch(root, RecursiveMode::Recursive)
             .with_context(|| root.display().to_string())?;
-        Ok(Self {
-            changes,
-            _watcher: watcher,
-        })
-    }
-
-    /// Listens for the site's changes.
-    #[must_use]
-    pub fn subscribe(&self) -> broadcast::Receiver<()> {
-        self.changes.subscribe()
+        if let Some(git) = git {
+            watcher
+                .watch(git, RecursiveMode::NonRecursive)
+                .with_context(|| git.display().to_string())?;
+            let refs = git.join("refs");
+            watcher
+                .watch(&refs, RecursiveMode::Recursive)
+                .with_context(|| refs.display().to_string())?;
+        }
+        Ok(watcher)
     }
 
     fn files(root: &Path) -> anyhow::Result<BTreeSet<PathBuf>> {
@@ -80,6 +109,18 @@ impl Live {
     /// folder is renamed.
     fn of_site(path: &Path, files: &BTreeSet<PathBuf>) -> bool {
         files.contains(path) || files.iter().any(|f| f.starts_with(path))
+    }
+
+    /// What a change in the repository's git folder is: `pull` for its remotes' branches, `git` for its HEAD,
+    /// packed refs and other refs, and nothing for the rest, such as its objects or index.
+    fn of_git(path: &Path, git: &Path) -> Option<Change> {
+        let inside = path.strip_prefix(git).ok()?;
+        if inside.starts_with("refs/remotes") {
+            return Some("pull");
+        }
+        let first = inside.components().next()?;
+        matches!(first, Component::Normal(n) if n == "HEAD" || n == "packed-refs" || n == "refs")
+            .then_some("git")
     }
 }
 
@@ -99,8 +140,27 @@ mod tests {
         assert!(!Live::of_site(Path::new("arch/dm"), &files));
     }
 
+    #[test]
+    fn moved_refs_are_told_apart_from_the_rest_of_git() {
+        let git = Path::new("/repo/.git");
+        assert_eq!(Live::of_git(Path::new("/repo/.git/HEAD"), git), Some("git"));
+        assert_eq!(
+            Live::of_git(Path::new("/repo/.git/refs/heads/main"), git),
+            Some("git")
+        );
+        assert_eq!(
+            Live::of_git(Path::new("/repo/.git/refs/remotes/origin/main"), git),
+            Some("pull")
+        );
+        assert_eq!(
+            Live::of_git(Path::new("/repo/.git/objects/ab/cd"), git),
+            None
+        );
+        assert_eq!(Live::of_git(Path::new("/repo/docs/a.md"), git), None);
+    }
+
     /// Whether a change is told within a while.
-    async fn told(changes: &mut broadcast::Receiver<()>) -> bool {
+    async fn told(changes: &mut broadcast::Receiver<Change>) -> bool {
         tokio::time::timeout(Duration::from_secs(5), changes.recv())
             .await
             .is_ok()
@@ -113,8 +173,9 @@ mod tests {
         fs::write(root.join(".gitignore"), "target/\n").unwrap();
         fs::write(root.join("a.md"), "# A").unwrap();
         fs::create_dir(root.join("target")).unwrap();
-        let live = Live::watch(&root, broadcast::channel(16).0).unwrap();
-        let mut changes = live.subscribe();
+        let told_to = broadcast::channel(16).0;
+        let mut changes = told_to.subscribe();
+        let _live = Live::watch(&root, None, told_to).unwrap();
 
         fs::write(root.join("target/x.md"), "# Ignored").unwrap();
         assert!(

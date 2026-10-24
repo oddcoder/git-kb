@@ -44,7 +44,7 @@ use crate::config::{CommentsConfig, LookConfig};
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
-use crate::live::Live;
+use crate::live::{Change, Live};
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
 use crate::shell::{self, Comparison, Links, Margin, Notes, PageHistory, Shell, Version};
@@ -61,8 +61,8 @@ pub struct Server {
     comments: Option<Store>,
     /// Minutes between syncs of the comments with every remote; 0 for never.
     sync_every: u64,
-    /// The site's changes, told to open pages.
-    changes: broadcast::Sender<()>,
+    /// What of the site changes, told to open pages: its files, its repository's refs, or its remotes'.
+    changes: broadcast::Sender<Change>,
     /// Whether it is stopping, told to open pages' event streams, which would otherwise never end.
     stopping: watch::Sender<bool>,
 }
@@ -142,11 +142,25 @@ impl Server {
             .with_context(|| address.to_string())?;
         info!(url = %format!("http://{address}/docs/"), root = %self.root.display(), "serving");
         // Without watching, pages are served still, but do not load again by themselves.
-        let _live = Live::watch(&self.root, self.changes.clone())
+        let git = self.repo.as_ref().map(|repo| repo.git().git_dir());
+        let _live = Live::watch(&self.root, git, self.changes.clone())
             .inspect_err(|e| warn!("not watching for changes: {e:#}"))
             .ok();
         let stopping = self.stopping.clone();
         let server = Arc::new(self);
+        if server.comments.is_some() {
+            // A fetch or a pull brings others' branches: their comments are synced then too.
+            let puller = Arc::clone(&server);
+            let mut changes = server.changes.subscribe();
+            tokio::spawn(async move {
+                while let Ok(change) = changes.recv().await {
+                    if change == "pull" {
+                        let server = Arc::clone(&puller);
+                        let _ = tokio::task::spawn_blocking(move || server.sync()).await;
+                    }
+                }
+            });
+        }
         if server.comments.is_some() && server.sync_every > 0 {
             let syncer = Arc::clone(&server);
             let every = std::time::Duration::from_secs(60 * server.sync_every);
@@ -208,7 +222,7 @@ impl Server {
         let changes = BroadcastStream::new(self.changes.subscribe()).filter_map(|change| {
             change
                 .ok()
-                .map(|()| Some(Ok(Event::default().data("changed"))))
+                .map(|_| Some(Ok(Event::default().data("changed"))))
         });
         let stopped = WatchStream::new(self.stopping.subscribe())
             .filter_map(|stopping| stopping.then_some(None));
@@ -345,7 +359,7 @@ impl Server {
             Ok(synced) => {
                 info!(said = synced.said, "comments synced");
                 if synced.brought > 0 {
-                    let _ = self.changes.send(());
+                    let _ = self.changes.send("git");
                 }
             }
             Err(e) => warn!("comments not synced: {e:#}"),
@@ -1563,7 +1577,7 @@ mod tests {
             .unwrap()
             .to_owned();
         assert_eq!(kind, "text/event-stream");
-        server.changes.send(()).unwrap();
+        server.changes.send("docs").unwrap();
         let mut events = response.into_body().into_data_stream();
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
             .await
