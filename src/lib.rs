@@ -9,6 +9,7 @@ pub mod git;
 pub mod graph;
 pub mod live;
 pub mod nav;
+pub mod plugins;
 pub mod render;
 pub mod search;
 pub mod serve;

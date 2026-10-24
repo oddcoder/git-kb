@@ -50,13 +50,18 @@ pub const LIVE: &str = include_str!(concat!(env!("OUT_DIR"), "/live.js"));
 pub const LIVE_PATH: &str = "_assets/live.js";
 
 /// The files every page uses, by their paths in the site.
-pub const ASSETS: [(&str, &str); 6] = [
+/// The script of plugins' figures, compiled from `web/src/figures.ts`: their zoom.
+pub const FIGURES: &str = include_str!(concat!(env!("OUT_DIR"), "/figures.js"));
+pub const FIGURES_PATH: &str = "_assets/figures.js";
+
+pub const ASSETS: [(&str, &str); 7] = [
     (STYLE_PATH, STYLE),
     (LOOK_PATH, LOOK),
     (LAYOUT_PATH, LAYOUT),
     (SEARCH_PATH, SEARCH),
     (GRAPH_PATH, GRAPH),
     (LIVE_PATH, LIVE),
+    (FIGURES_PATH, FIGURES),
 ];
 
 /// How a site's pages link to the rest of it.
@@ -190,7 +195,7 @@ impl Shell {
                 "<!doctype html>\n<html lang=\"en\"{look}>\n<head>\n<meta charset=\"utf-8\">\n",
                 "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n",
                 "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n",
-                "<script src=\"{script}\"></script>\n<script src=\"{layout}\"></script>\n<script src=\"{graph}\" defer></script>\n</head>\n<body>\n",
+                "<script src=\"{script}\"></script>\n<script src=\"{layout}\"></script>\n<script src=\"{graph}\" defer></script>\n<script src=\"{figures}\" defer></script>\n{plugins}</head>\n<body>\n",
                 "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}{revisions}{search}</header>\n",
                 "<div class=\"layout{has_rail}\">\n{side}<main class=\"page\">\n{trail}{body}",
                 "<div class=\"edge edge-left\" title=\"Drag to move the text; let go near the middle to centre it\"></div>",
@@ -214,6 +219,9 @@ impl Shell {
             script = self.asset(at, LOOK_PATH),
             layout = self.asset(at, LAYOUT_PATH),
             graph = self.asset(at, GRAPH_PATH),
+            figures = self.asset(at, FIGURES_PATH),
+            // The plugins whose blocks are on the page or its comments, each with its own files, beside the site's.
+            plugins = crate::plugins::get().head(&[body, rail], &self.asset(at, "")),
             top = self.folder(at, Path::new("")),
             name = Self::escape(&self.name),
             side = self.side(at, nav),

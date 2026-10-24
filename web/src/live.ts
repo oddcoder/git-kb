@@ -1,8 +1,9 @@
 // The page, kept live: told by the server when a file of the site or a git ref changes, it fetches itself afresh and
 // swaps in the parts that may differ, the sidebar, the page and its comments, rather than loading again. What the
-// reader is doing is kept: where they are on the page, Page or Source, which threads are open, and Show resolved.
-// While they write a comment, read a card, choose words or drag an edge, the change waits until they are done. The
-// other scripts are told, by a kb-refresh event, to hook what is new.
+// reader is doing is kept: where they are on the page, Page or Source, which threads are open, Show resolved, and
+// diagrams drawn already, by any plugin, which are not drawn again unless their source changed; a plugin the page
+// did not use before is loaded. While they write a comment, read a card, choose words or drag an edge, the change
+// waits until they are done. The other scripts are told, by a kb-refresh event, to hook what is new.
 import { $, $$ } from './dom';
 
 // The parts that may differ, each with the part it follows, for one the page did not have before, as the column of
@@ -35,6 +36,9 @@ function swap(fresh: Document): void {
   const resolved = $<HTMLInputElement>('#show-resolved')?.checked;
   const open = new Set($$<HTMLDetailsElement>('details.thread[open]').map((d) => d.id));
   const closed = new Set($$<HTMLDetailsElement>('details.thread:not([open])').map((d) => d.id));
+  // Diagrams drawn already, by their plugin and source, to put back in place of the same diagram undrawn.
+  const key = (f: HTMLElement) => `${f.dataset.plugin}\n${$('details code', f)?.textContent}`;
+  const drawn = new Map($$('figure.kb-block[data-rendered]').map((f) => [key(f), f]));
   for (const [part, after] of PARTS) {
     const now = $(part), next = $(part, fresh);
     if (now && next) now.replaceWith(next);
@@ -43,6 +47,10 @@ function swap(fresh: Document): void {
   }
   $('.layout')?.classList.toggle('has-rail', !!$('.layout > .rail'));
   document.title = fresh.title;
+  for (const figure of $$('figure.kb-block')) {
+    const old = drawn.get(key(figure));
+    if (old) figure.replaceWith(old);
+  }
   const box = $<HTMLInputElement>('#v-source');
   if (box) box.checked = !!source;
   const show = $<HTMLInputElement>('#show-resolved');
@@ -51,8 +59,34 @@ function swap(fresh: Document): void {
     if (open.has(d.id)) d.open = true;
     if (closed.has(d.id)) d.open = false;
   }
+  load(fresh);
   document.dispatchEvent(new Event('kb-refresh'));
   requestAnimationFrame(() => stay(at));
+}
+
+// The scripts and styles of plugins the fresh page uses and this one did not load yet, added in order, so that a
+// plugin's own script runs after the library it draws with.
+function load(fresh: Document): void {
+  const have = new Set([...document.head.children].map((e) => e.outerHTML));
+  const plugins = new Set($$('[data-plugin]').map((e) => e.dataset.plugin ?? ''));
+  const loaded = new Set($$('[data-kb-plugin], [data-kb-plugin-head]', document.head)
+    .map((e) => e.dataset.kbPlugin ?? e.dataset.kbPluginHead));
+  for (const name of plugins) {
+    if (loaded.has(name)) continue;
+    const quoted = CSS.escape(name);
+    for (const old of $$(`[data-kb-plugin-head="${quoted}"], [data-kb-plugin="${quoted}"]`, fresh.head)) {
+      if (have.has(old.outerHTML)) continue;
+      let e: Element;
+      if (old instanceof HTMLScriptElement) {
+        const s = document.createElement('script');
+        for (const a of old.attributes) s.setAttribute(a.name, a.value);
+        s.textContent = old.textContent;
+        s.async = false;
+        e = s;
+      } else e = old.cloneNode(true) as Element;
+      document.head.append(e);
+    }
+  }
 }
 
 let waiting: ReturnType<typeof setTimeout> | undefined;

@@ -248,6 +248,9 @@ impl Server {
         if path == "/_comments" {
             return self.comments_page();
         }
+        if let Some(rest) = path.strip_prefix("/_plugins/") {
+            return self.plugin_file(rest);
+        }
         let (snapshot, rest) = if let Some(rest) = path.strip_prefix("/docs") {
             if rest.is_empty() {
                 return Redirect::permanent("/docs/").into_response();
@@ -277,6 +280,17 @@ impl Server {
         match self.view(snapshot) {
             Ok(view) => view.answer(decoded.trim_start_matches('/'), path, query),
             Err(e) => self.failed(&e),
+        }
+    }
+
+    /// One of a plugin's own files, by its plugin and its name.
+    fn plugin_file(&self, rest: &str) -> Response {
+        let found = rest
+            .split_once('/')
+            .and_then(|(plugin, file)| crate::plugins::get().file(plugin, file));
+        match found {
+            Some((kind, bytes)) => ([(header::CONTENT_TYPE, kind)], bytes.to_vec()).into_response(),
+            None => self.missing(&format!("There is no plugin file at /_plugins/{rest}.")),
         }
     }
 

@@ -14,6 +14,8 @@ use syntect::html::{ClassStyle, ClassedHTMLGenerator};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
+use crate::plugins::{self, Plugins};
+
 /// The syntaxes highlighter is loaded once and shared by every renderer.
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 
@@ -98,6 +100,8 @@ pub type Marks<'a> = &'a dyn Fn(std::ops::Range<usize>) -> Option<Mark>;
 #[derive(Debug, Clone)]
 pub struct Renderer {
     options: Options,
+    /// What renders the blocks that Markdown alone does not.
+    plugins: &'static Plugins,
 }
 
 impl Default for Renderer {
@@ -107,15 +111,22 @@ impl Default for Renderer {
 }
 
 impl Renderer {
-    /// A renderer of CommonMark, GitHub's extensions, and `{#id}` after a heading to choose its id.
+    /// A renderer of CommonMark, GitHub's extensions, and `{#id}` after a heading to choose its id, with the
+    /// plugins git-kb.toml names.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_plugins(plugins::get())
+    }
+
+    /// The same, with these plugins.
+    #[must_use]
+    pub fn with_plugins(plugins: &'static Plugins) -> Self {
         let options = Options::ENABLE_TABLES
             | Options::ENABLE_FOOTNOTES
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_HEADING_ATTRIBUTES;
-        Self { options }
+        Self { options, plugins }
     }
 
     /// The Markdown it reads, for anything else that must read a page as it does.
@@ -241,6 +252,12 @@ impl Renderer {
                         text: String::new(),
                     });
                 }
+                // A diagram's source is not prose.
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
+                    if self.plugins.is_figure(Self::lang(&info)) =>
+                {
+                    drop(Self::inside(&mut events));
+                }
                 Event::Text(t) | Event::Code(t) => {
                     if let Some(section) = out.last_mut() {
                         section.text.push_str(&t);
@@ -346,7 +363,7 @@ impl Renderer {
                 }
                 Event::Start(Tag::CodeBlock(kind)) => {
                     let inner = Self::inside(&mut events);
-                    out.extend(Self::code_block(kind, inner));
+                    out.extend(self.code_block(kind, inner));
                 }
                 Event::Start(Tag::Link {
                     link_type,
@@ -386,13 +403,19 @@ impl Renderer {
         moved(&dest).map_or(dest, Into::into)
     }
 
-    /// A code block: highlighted, when its language is known, or else as it was, for pulldown-cmark to
-    /// escape.
-    fn code_block<'a>(kind: CodeBlockKind<'a>, inner: Vec<Event<'a>>) -> Vec<Event<'a>> {
+    /// A code block: a plugin's, as the plugin renders it; highlighted, when its language is known; or else as it
+    /// was, for pulldown-cmark to escape.
+    fn code_block<'a>(&self, kind: CodeBlockKind<'a>, inner: Vec<Event<'a>>) -> Vec<Event<'a>> {
         let lang = match &kind {
             CodeBlockKind::Fenced(info) => Self::lang(info).to_string(),
             CodeBlockKind::Indented => String::new(),
         };
+        if let Some(plugin) = self.plugins.block(&lang) {
+            let source = Self::plain_text(&inner);
+            return vec![Event::Html(
+                self.plugins.render_block(plugin, &source).into(),
+            )];
+        }
         match Self::highlight(&lang, &Self::plain_text(&inner)) {
             Some(html) => vec![Event::Html(
                 format!(r#"<pre><code class="language-{lang}">{html}</code></pre>"#).into(),
@@ -440,10 +463,20 @@ impl Renderer {
         })
     }
 
+    /// Text as HTML, with the characters that would read as markup escaped, for text and attribute values alike.
+    #[must_use]
+    pub fn escape(text: &str) -> String {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    }
+
     /// Code as HTML, its tokens in spans whose classes name what they are, as `hl-keyword` and
     /// `hl-string`, for a style sheet to color; or none, when the language is not known. A language
     /// is known by its name or its files' extension, as `rust` or `rs`.
-    fn highlight(lang: &str, code: &str) -> Option<String> {
+    #[must_use]
+    pub fn highlight(lang: &str, code: &str) -> Option<String> {
         const CLASSES: ClassStyle = ClassStyle::SpacedPrefixed { prefix: "hl-" };
         let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
         let syntax = syntaxes.find_syntax_by_token(lang)?;
@@ -836,5 +869,54 @@ mod tests {
                 .contains("<b>bold</b>"),
             "a page's own HTML is kept"
         );
+    }
+
+    /// A renderer with one plugin of the repository's own, `dots`, whose blocks are figures.
+    fn with_dots() -> Renderer {
+        let (dir, given) = crate::plugins::tests::own(
+            "name = \"dots\"\nblocks = [\"dots\"]\nfigure = true\nstage = '<pre class=\"dots\">{source.html}</pre>'\n",
+            &[],
+        );
+        let config = crate::config::Config {
+            plugins: [("dots".to_string(), given)].into_iter().collect(),
+            base: dir.path().to_path_buf(),
+            ..crate::config::Config::default()
+        };
+        let plugins =
+            Plugins::load(&config, Some(std::path::Path::new("git-kb.toml")), None).unwrap();
+        Renderer::with_plugins(Box::leak(Box::new(plugins)))
+    }
+
+    #[test]
+    fn a_plugin_s_block_is_the_plugin_s_to_render() {
+        let html = with_dots()
+            .render("```dots\na < b\n```\n\n```rust\nfn f() {}\n```\n")
+            .html;
+        assert!(
+            html.contains(r#"<figure class="kb-figure kb-block" data-plugin="dots"><div class="kb-stage" title="Click to zoom"><pre class="dots">a &lt; b
+</pre></div>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<pre><code class="language-rust">"#),
+            "other code is highlighted still: {html}"
+        );
+        assert!(
+            !Renderer::new()
+                .render("```dots\nx\n```")
+                .html
+                .contains("kb-figure"),
+            "without the plugin, code"
+        );
+    }
+
+    #[test]
+    fn a_diagram_s_source_is_not_searched() {
+        let text: String = with_dots()
+            .sections("# A\n\nWords.\n\n```dots\nsecret source\n```\n")
+            .iter()
+            .map(|s| s.text.clone())
+            .collect();
+        assert!(text.contains("Words") && !text.contains("secret"), "{text}");
     }
 }

@@ -34,6 +34,13 @@ pub enum Command {
         #[arg(default_value = ".")]
         folder: PathBuf,
     },
+    /// List the built-in plugins, and the ones git-kb.toml uses
+    #[command(display_name = "git-kb")]
+    Plugins {
+        /// A folder to find git-kb.toml from, which says which are used
+        #[arg(default_value = ".")]
+        folder: PathBuf,
+    },
 }
 
 #[cfg(test)]

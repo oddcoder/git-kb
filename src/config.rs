@@ -21,6 +21,9 @@
 //! [comments]
 //! namespace = "refs/git-kb/comments"  # each person's comments are <namespace>/<their email>
 //!
+//! [plugins.graphviz]     # a plugin, by name: a built-in one, or, by path, a folder with a plugin.toml;
+//! path = "tools/kb-graphviz"  # its options go in its table. See plugins.rs for what a plugin is.
+//!
 //!
 //! [look]                 # how the pages look until a reader chooses in the Aa menu; web/src/look.ts's
 //! scheme = "auto"        # light, dark, or auto, as the reader's system is
@@ -30,6 +33,7 @@
 //! code = "system"        # code's font: system, menlo or courier
 //! ```
 
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
@@ -41,7 +45,7 @@ use tracing::{debug, trace};
 use crate::build::Builder;
 
 /// The settings for a folder of Markdown.
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// The folder of Markdown shown, as a full path once read.
@@ -54,6 +58,11 @@ pub struct Config {
     pub build: BuildConfig,
     pub comments: CommentsConfig,
     pub look: LookConfig,
+    /// Each plugin by name, with its options; a `path` names a plugin of the repository's own.
+    pub plugins: BTreeMap<String, toml::Table>,
+    /// The folder the settings' paths are taken against: the file's, or the folder's when there is none.
+    #[serde(skip)]
+    pub base: PathBuf,
 }
 
 impl Default for Config {
@@ -66,6 +75,8 @@ impl Default for Config {
             build: BuildConfig::default(),
             comments: CommentsConfig::default(),
             look: LookConfig::default(),
+            plugins: BTreeMap::new(),
+            base: PathBuf::new(),
         }
     }
 }
@@ -207,6 +218,7 @@ impl Config {
 
     /// Its paths taken against a folder.
     fn resolve(&mut self, base: &Path) -> anyhow::Result<()> {
+        self.base = base.to_path_buf();
         if let Some(url) = &mut self.url {
             if !(url.starts_with("https://") || url.starts_with("http://")) {
                 anyhow::bail!("url {url}: an address starts with https:// or http://");

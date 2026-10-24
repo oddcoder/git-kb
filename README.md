@@ -74,6 +74,9 @@ out = "target/git-kb"             # where the site is written; git kb build only
 [comments]
 namespace = "refs/git-kb/comments"  # each person's comments are kept under <namespace>/<their email>
 
+[plugins.graphviz]                # a plugin by name, built in or, by path, the repository's own; its options go in its table
+path = "tools/kb-graphviz"
+
 [look]                            # how pages look until a reader chooses otherwise in the Aa menu
 scheme = "auto"                   # light, dark, or auto, as the reader's system is
 palette = "github"                # github, paper, solarized, nord or gruvbox
@@ -81,6 +84,55 @@ size = 16                         # the text size in pixels: 14, 15, 16, 18 or 2
 font = "sans"                     # the text font: sans, serif or mono
 code = "system"                   # the code font: system, menlo or courier
 ```
+
+## Plugins
+
+Plugins render what Markdown alone does not: fenced blocks such as ```` ```tikz ````. Only the plugins `git-kb.toml` names are used; without a `git-kb.toml`, every built-in one. A page loads a plugin's scripts only if it uses that plugin. `git kb plugins` lists them.
+
+| Plugin | Renders | How |
+|---|---|---|
+
+A diagram plugin's blocks are *figures*: each shows its source under a bar, and can be clicked to zoom.
+
+### Writing one
+
+A plugin is a folder with a `plugin.toml`, named in `git-kb.toml` by its path. It renders in one of two ways:
+- **In the browser:** each block becomes the plugin's `stage` HTML, which its scripts then draw.
+- **When served and built:** git kb runs a `command` with the block's source on its input. The SVG or HTML on its output becomes the block. Outputs are cached by their source, so each one is made only once.
+
+```toml
+name = "graphviz"
+description = "Graphviz graphs, laid out by the dot command"
+blocks = ["dot"]            # the fence languages it renders
+figure = true               # whether its blocks are figures: with their source under a bar, zoomable
+highlight = "text"          # how its source is highlighted, under the bar
+
+# When served and built: the source on the command's input, its SVG output the block.
+command = ["dot", "-Tsvg", "-Gbgcolor=transparent", "-Nfontname={font}"]
+
+# Or, instead of command, in the browser: the HTML each block becomes, and the scripts that draw it.
+# stage = '<pre class="graph">{source.html}</pre>'
+# head = ['<script src="https://cdn.example.org/viz.js" defer></script>']
+# scripts = ["graphviz.js"]  # its own files, served from {assets}
+# styles = ["graphviz.css"]
+
+[options]                   # each option and its default; git-kb.toml may set any of them
+font = "Helvetica"
+[files]                     # options that name a file, whose content is used
+# preamble = "preamble.tex"
+```
+
+These placeholders are filled in `stage`, `head` and `command`:
+- `{name}`: an option's value.
+- `{source.html}`: the block's source, escaped for HTML.
+- `{source.raw}`: the source as it is, for inside a `<script>`.
+- `{assets}`: where the plugin's own files are served.
+
+A plugin's scripts must follow these rules:
+- They are plain scripts, not modules, so that a built site works from disk.
+- They draw the blocks in `[data-plugin="name"]`.
+- They draw again on the `kb-refresh` event, which fires after a live update swaps in a fresh copy of the page. They may also redraw when the reader changes the look: the `data-*` attributes of `<html>`, which a `MutationObserver` can watch.
+- They mark each block they have drawn with `data-rendered`, so that a live update keeps the drawing while its source is the same.
 
 ## Developing
 

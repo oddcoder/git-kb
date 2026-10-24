@@ -200,6 +200,12 @@ impl Builder {
             .with_context(|| index.display().to_string())?;
         }
 
+        // The plugins' own files, once, beside the sites, as git-kb's own are.
+        for (path, bytes) in crate::plugins::get().every_file() {
+            let to = out.join(path);
+            fs::create_dir_all(to.parent().unwrap_or(&out))?;
+            fs::write(&to, bytes).with_context(|| to.display().to_string())?;
+        }
         for (path, text) in shell::ASSETS {
             let to = out.join(path);
             fs::create_dir_all(to.parent().unwrap_or(&out))?;
