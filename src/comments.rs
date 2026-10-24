@@ -27,10 +27,14 @@ use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Context, anyhow};
 use gix::ObjectId;
+use gix::object::tree::diff::ChangeDetached;
 use gix::objs::tree::EntryKind;
 use serde::{Deserialize, Serialize};
+use similar::{Algorithm, DiffTag, capture_diff_slices};
 
+use crate::diff::Diff;
 use crate::git::{Repo, When};
+use crate::render::Renderer;
 
 /// The longest comment taken, in bytes.
 pub const MAX_BODY: usize = 20_000;
@@ -108,9 +112,37 @@ struct Resolve {
     resolved: bool,
 }
 
+/// Where a thread is on a page as it is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    /// On the lines it began on, unchanged.
+    Same,
+    /// On those lines, which have changed since.
+    Edited,
+    /// On the paragraph most like the one it began on, its lines themselves gone.
+    Moved,
+}
+
+/// A thread found on a page: on which of its lines now, and how.
+#[derive(Debug, Clone)]
+pub struct Located {
+    pub thread: Thread,
+    pub lines: Range<usize>,
+    pub state: State,
+}
+
+/// The threads on a page as it is shown: those found on it, and those of its history whose text is gone from it.
+#[derive(Debug, Default)]
+pub struct OnPage {
+    pub found: Vec<Located>,
+    pub lost: Vec<Thread>,
+}
+
 /// The comments kept in a repository.
 pub struct Store {
     git: gix::ThreadSafeRepository,
+    /// The site's folder in the repository, as `docs`, or empty when it is the repository's top.
+    prefix: PathBuf,
     /// Where everyone's refs are, such as `refs/git-kb/comments`.
     namespace: String,
     /// Writes are one at a time, so that two at once both land on one's ref.
@@ -131,6 +163,7 @@ impl Store {
     pub fn new(repo: &Repo, namespace: &str) -> Self {
         Self {
             git: repo.git().clone(),
+            prefix: repo.prefix().to_path_buf(),
             namespace: namespace.trim_end_matches('/').to_string(),
             writing: Mutex::default(),
         }
@@ -268,6 +301,91 @@ impl Store {
         self.commit(&repo, &[file], &message)
     }
 
+    /// The threads on a page as it is shown at a commit, with its text now, which may hold edits not committed.
+    ///
+    /// A thread is on the page its page has become since it began, through renames. The commit it began on is a
+    /// hint, not a must: a rebase or a squash leaves it out of the history shown, and a colleague's may never have
+    /// been here. So a thread from the history shown is found wherever its text has gone, and is lost when its
+    /// text is gone; one from outside it, as on a branch not merged, only where its text is plainly here.
+    ///
+    /// # Errors
+    ///
+    /// When the threads, or the commit shown, cannot be read.
+    pub fn on_page(
+        &self,
+        page: &Path,
+        at: ObjectId,
+        text: &str,
+        renderer: &Renderer,
+    ) -> anyhow::Result<OnPage> {
+        let repo = self.git.to_thread_local();
+        let mut on = OnPage::default();
+        for thread in self.threads()? {
+            let known = repo.find_commit(thread.commit).is_ok();
+            let ours = known && is_ancestor(&repo, thread.commit, at);
+            let now_at = if known {
+                self.path_at(&repo, &thread, at)?
+            } else {
+                Some(thread.page.clone())
+            };
+            if now_at.as_deref() != Some(page) {
+                continue;
+            }
+            // Its copy of the text it began on may not have been fetched.
+            let Ok(then) = repo.find_blob(thread.text) else {
+                continue;
+            };
+            let then = String::from_utf8_lossy(&then.data).into_owned();
+            match place(&thread, &then, text, renderer) {
+                Some((lines, state)) if ours || plainly_here(&thread, text, &lines, state) => {
+                    on.found.push(Located {
+                        thread,
+                        lines,
+                        state,
+                    });
+                }
+                None if ours => on.lost.push(thread),
+                _ => {}
+            }
+        }
+        Ok(on)
+    }
+
+    /// Where a thread's page is at a commit, from the site's top: where it began, if it is still there; or else
+    /// where git finds it was renamed to; or none, when it is gone.
+    fn path_at(
+        &self,
+        repo: &gix::Repository,
+        thread: &Thread,
+        at: ObjectId,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        let full = self.prefix.join(&thread.page);
+        let now = repo.find_commit(at)?.tree()?;
+        if thread.commit == at || now.lookup_entry_by_path(&full)?.is_some() {
+            return Ok(Some(thread.page.clone()));
+        }
+        let then = repo.find_commit(thread.commit)?.tree()?;
+        let mut options = gix::diff::Options::default();
+        options
+            .track_path()
+            .track_rewrites(Some(gix::diff::Rewrites::default()));
+        let renamed = repo
+            .diff_tree_to_tree(&then, &now, options)?
+            .into_iter()
+            .find_map(|change| match change {
+                ChangeDetached::Rewrite {
+                    source_location,
+                    location,
+                    copy: false,
+                    ..
+                } if Path::new(&source_location.to_string()) == full => {
+                    Some(PathBuf::from(location.to_string()))
+                }
+                _ => None,
+            });
+        Ok(renamed.and_then(|path| path.strip_prefix(&self.prefix).ok().map(Path::to_path_buf)))
+    }
+
     /// The tips of everyone's refs.
     fn tips(&self, repo: &gix::Repository) -> anyhow::Result<Vec<ObjectId>> {
         let references = repo.references()?;
@@ -336,6 +454,92 @@ impl Store {
             .with_context(|| format!("writing {mine}"))?;
         Ok(())
     }
+}
+
+/// Whether a commit is in the history of another, or is it.
+fn is_ancestor(repo: &gix::Repository, ancestor: ObjectId, of: ObjectId) -> bool {
+    ancestor == of
+        || repo
+            .merge_base(ancestor, of)
+            .is_ok_and(|base| base.is_some_and(|base| base.detach() == ancestor))
+}
+
+/// Whether a thread from outside the history shown is plainly on this page: its lines unchanged, or still most of
+/// what they were.
+fn plainly_here(thread: &Thread, text: &str, lines: &Range<usize>, state: State) -> bool {
+    let now: Vec<&str> = text.lines().collect();
+    let here = now
+        .get(lines.clone())
+        .map(|l| l.join("\n"))
+        .unwrap_or_default();
+    state == State::Same || Diff::similarity(&thread.quote, &here) >= 0.6
+}
+
+/// Where a thread's lines are in a page's text now, from the text it began on: followed through the edits since,
+/// or, when they are gone, the block most like the one it began on, if any is like enough.
+fn place(
+    thread: &Thread,
+    then: &str,
+    now: &str,
+    renderer: &Renderer,
+) -> Option<(Range<usize>, State)> {
+    let (a, b): (Vec<&str>, Vec<&str>) = (then.lines().collect(), now.lines().collect());
+    let (start, end) = (thread.lines.start, thread.lines.end);
+    let (mut new_start, mut new_end, mut changed) = (None, None, false);
+    for op in capture_diff_slices(Algorithm::Patience, &a, &b) {
+        let (tag, old, new) = op.as_tag_tuple();
+        if tag != DiffTag::Equal && old.start < end && start < old.end.max(old.start + 1) {
+            changed = true;
+        }
+        // Only the change that holds a line moves it: lines put in just before it are not where it went.
+        if old.contains(&start) {
+            new_start = Some(if tag == DiffTag::Equal {
+                new.start + (start - old.start)
+            } else {
+                new.start
+            });
+        }
+        let last = end.saturating_sub(1);
+        if old.contains(&last) {
+            new_end = Some(if tag == DiffTag::Equal {
+                new.start + (last - old.start) + 1
+            } else {
+                new.end
+            });
+        }
+    }
+    // Each block's lines now, and how like the thread's lines each is.
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(now.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    let line = |offset: usize| starts.partition_point(|&s| s <= offset).saturating_sub(1);
+    let blocks: Vec<(f64, Range<usize>)> = renderer
+        .block_ranges(now)
+        .into_iter()
+        .map(|r| {
+            let lines = line(r.start)..line(r.end.saturating_sub(1).max(r.start)) + 1;
+            (Diff::similarity(&thread.quote, &now[r]), lines)
+        })
+        .collect();
+    let best = |within: &dyn Fn(&Range<usize>) -> bool, enough: f64| {
+        blocks
+            .iter()
+            .filter(|(likeness, lines)| *likeness >= enough && within(lines))
+            .max_by(|x, y| x.0.total_cmp(&y.0))
+            .map(|(_, lines)| lines.clone())
+    };
+    if let (Some(s), Some(e)) = (new_start, new_end)
+        && s < e
+    {
+        if !changed {
+            return Some((s..e, State::Same));
+        }
+        // An edit can take in new paragraphs beside the lines: of the blocks they went to, the one most like them.
+        if let Some(lines) = best(&|l| l.start < e && s < l.end, 0.4) {
+            return Some((lines, State::Edited));
+        }
+    }
+    best(&|_| true, 0.5).map(|lines| (lines, State::Moved))
 }
 
 /// A thread's files, from every ref that holds them, put together: its anchor from wherever it is, and its
@@ -668,5 +872,128 @@ mod tests {
         assert_eq!(stamps, sorted);
         sorted.dedup();
         assert_eq!(sorted.len(), 100);
+    }
+
+    /// What a page shows: each thread found, as (its first comment, lines, state), and each lost, as its first
+    /// comment.
+    type Shown = (Vec<(String, Range<usize>, State)>, Vec<String>);
+
+    /// The page as shown at HEAD with this text.
+    fn shown(git: &Git, store: &Store, page: &str, text: &str) -> Shown {
+        let on = store
+            .on_page(Path::new(page), head(git), text, &Renderer::new())
+            .unwrap();
+        let first = |t: &Thread| t.comments[0].body.clone();
+        (
+            on.found
+                .iter()
+                .map(|l| (first(&l.thread), l.lines.clone(), l.state))
+                .collect(),
+            on.lost.iter().map(first).collect(),
+        )
+    }
+
+    const PAGE: &str = "# A\n\nThe dispatcher feeds tasklets to the units.\n\nThe scratchpads hold the tiles of each product.\n";
+
+    /// A site with PAGE committed, and a thread on its last paragraph.
+    fn commented() -> (Git, Store) {
+        let (git, store) = site();
+        git.write("docs/a.md", PAGE);
+        git.commit("Paragraphs");
+        let begin = Begin {
+            page: Path::new("a.md"),
+            commit: head(&git),
+            text: PAGE,
+            lines: 4..5,
+            snippet: Snippet::default(),
+        };
+        store.begin(&begin, "On the scratchpads").unwrap();
+        (git, store)
+    }
+
+    #[test]
+    fn a_thread_is_on_its_lines_while_they_are_as_they_were() {
+        let (git, store) = commented();
+        let (found, lost) = shown(&git, &store, "a.md", PAGE);
+        assert_eq!(found, [("On the scratchpads".into(), 4..5, State::Same)]);
+        assert_eq!(lost, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_thread_follows_its_lines_as_text_is_added_above_them() {
+        let (git, store) = commented();
+        let now = PAGE.replace(
+            "# A\n\n",
+            "# A\n\nA new first paragraph.\n\nAnd another.\n\n",
+        );
+        let (found, _) = shown(&git, &store, "a.md", &now);
+        assert_eq!(found, [("On the scratchpads".into(), 8..9, State::Same)]);
+    }
+
+    #[test]
+    fn a_thread_stays_on_its_lines_as_they_are_edited() {
+        let (git, store) = commented();
+        let now = PAGE.replace("tiles of each product", "tiles of every product");
+        let (found, _) = shown(&git, &store, "a.md", &now);
+        assert_eq!(found, [("On the scratchpads".into(), 4..5, State::Edited)]);
+    }
+
+    #[test]
+    fn a_thread_finds_its_paragraph_moved_elsewhere() {
+        let (git, store) = commented();
+        let now = "# A\n\nThe scratchpads hold the tiles of each product, as before.\n\nThe dispatcher feeds tasklets to the units.\n";
+        let (found, lost) = shown(&git, &store, "a.md", now);
+        assert_eq!(found, [("On the scratchpads".into(), 2..3, State::Moved)]);
+        assert_eq!(lost, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_thread_whose_text_is_gone_is_lost() {
+        let (git, store) = commented();
+        let now = "# A\n\nThe dispatcher feeds tasklets to the units.\n";
+        let (found, lost) = shown(&git, &store, "a.md", now);
+        assert_eq!(found, []);
+        assert_eq!(lost, ["On the scratchpads"]);
+    }
+
+    #[test]
+    fn a_thread_is_only_on_its_own_page() {
+        let (git, store) = commented();
+        git.write("docs/b.md", PAGE);
+        git.commit("Another page, the same text");
+        let (found, lost) = shown(&git, &store, "b.md", PAGE);
+        assert!(found.is_empty() && lost.is_empty());
+    }
+
+    #[test]
+    fn a_thread_follows_its_page_as_it_is_renamed() {
+        let (git, store) = commented();
+        git.run(&["mv", "docs/a.md", "docs/moved.md"]);
+        git.commit("Rename");
+        let (found, _) = shown(&git, &store, "moved.md", PAGE);
+        assert_eq!(found, [("On the scratchpads".into(), 4..5, State::Same)]);
+        let (found, lost) = shown(&git, &store, "a.md", PAGE);
+        assert!(
+            found.is_empty() && lost.is_empty(),
+            "a.md is no longer its page"
+        );
+    }
+
+    #[test]
+    fn a_thread_from_another_branch_shows_only_where_its_text_plainly_is() {
+        let (git, store) = commented();
+        git.run(&["checkout", "-q", "-b", "side", "HEAD~1"]);
+        git.write("docs/a.md", PAGE);
+        git.commit("The same text, on a branch without the thread's commit");
+        let (found, _) = shown(&git, &store, "a.md", PAGE);
+        assert_eq!(found, [("On the scratchpads".into(), 4..5, State::Same)]);
+        let elsewhere = "# A\n\nThe dispatcher feeds tasklets to the units.\n\nSomething else entirely is here now.\n";
+        let (found, lost) = shown(&git, &store, "a.md", elsewhere);
+        assert_eq!(found, []);
+        assert_eq!(
+            lost,
+            Vec::<String>::new(),
+            "not lost either: it is not this history's"
+        );
     }
 }

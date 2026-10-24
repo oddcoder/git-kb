@@ -187,6 +187,24 @@ impl Diff {
     }
 
     /// The share of two lists of words that they have in common, from 0 to 1.
+    /// The share of two texts' words that they have in common, from 0 to 1. Words are compared without case or
+    /// punctuation, so "Paragraph." and "paragraph," are the same word.
+    #[must_use]
+    pub fn similarity(a: &str, b: &str) -> f64 {
+        let words = |text: &str| -> Vec<String> {
+            text.split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .map(str::to_lowercase)
+                .collect()
+        };
+        let (a, b) = (words(a), words(b));
+        let (a, b): (Vec<&str>, Vec<&str>) = (
+            a.iter().map(String::as_str).collect(),
+            b.iter().map(String::as_str).collect(),
+        );
+        Self::likeness(&a, &b)
+    }
+
     fn likeness(a: &[&str], b: &[&str]) -> f64 {
         if a.is_empty() && b.is_empty() {
             return 1.0;
@@ -385,5 +403,11 @@ mod tests {
                 r#"<span class="l-del">- b &lt;</span><span class="l-ins">+ c</span></code></pre>"#
             )
         );
+    }
+    #[test]
+    fn similar_texts_are_their_share_of_words_in_common() {
+        assert!((Diff::similarity("The Paragraph.", "the paragraph,") - 1.0).abs() < 1e-9);
+        assert!(Diff::similarity("one two three four", "one two five six") > 0.4);
+        assert!(Diff::similarity("one two", "three four") < 1e-9);
     }
 }

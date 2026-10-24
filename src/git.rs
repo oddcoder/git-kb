@@ -97,6 +97,12 @@ impl Repo {
         })
     }
 
+    /// The site's folder in the repository, as `docs`, or empty when it is the repository's top.
+    #[must_use]
+    pub fn prefix(&self) -> &Path {
+        &self.prefix
+    }
+
     /// The repository, for what reads or writes it beyond the site's files, as the comments do.
     #[must_use]
     pub fn git(&self) -> &gix::ThreadSafeRepository {
