@@ -4,6 +4,7 @@
 //!
 
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -85,6 +86,41 @@ impl Heading {
 /// Where a link's or image's target is now, given it as written, if it has moved.
 pub type Moved<'a> = &'a dyn Fn(&str) -> Option<String>;
 
+/// A diagram labelled on its fence, ```` ```tikz #fig:life "Data life cycle" ````: its id, its number on its
+/// page, in the order its figures come, and its caption.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Figure {
+    pub id: String,
+    pub number: usize,
+    pub caption: String,
+}
+
+impl Figure {
+    /// A fence's label and caption, from its info after the language: `#fig:id` and `"caption"`, in either
+    /// order; none when it has no `#fig:` label.
+    #[must_use]
+    pub fn label(info: &str) -> Option<(String, String)> {
+        let rest = info
+            .trim()
+            .split_once(char::is_whitespace)
+            .map_or("", |(_, r)| r);
+        let id = rest
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix('#'))?
+            .trim_matches('"');
+        let caption = match (rest.find('"'), rest.rfind('"')) {
+            (Some(a), Some(b)) if b > a => &rest[a + 1..b],
+            _ => "",
+        };
+        id.starts_with("fig:")
+            .then(|| (id.to_string(), caption.to_string()))
+    }
+}
+
+/// Another page's figure, for `@page.md#fig:id`, given the page as written and the figure's id: its href,
+/// number and caption.
+pub type Elsewhere<'a> = &'a dyn Fn(&str, &str) -> Option<(String, usize, String)>;
+
 /// A mark beside a top-level block of a page: a class for the block's wrapper, and the HTML that goes in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mark {
@@ -109,6 +145,11 @@ pub struct Opts<'a> {
     pub broken: Option<Broken<'a>>,
     /// Whether the text is a reader's, as a comment is: its HTML is shown as text.
     pub safe: bool,
+    /// Another page's figure, for `@page.md#fig:id`.
+    pub elsewhere: Option<Elsewhere<'a>>,
+    /// The page's figures, numbered, when what is rendered is a part of a page, as a block of a diff is; else the
+    /// text's own are found.
+    pub figures: Option<&'a [Figure]>,
 }
 
 /// Renders Markdown as HTML. What it holds is how it renders, so that what later features need, such as a
@@ -321,6 +362,27 @@ impl Renderer {
         None
     }
 
+    /// A page's labelled figures, numbered in the order they come.
+    #[must_use]
+    pub fn figures(&self, markdown: &str) -> Vec<Figure> {
+        Parser::new_ext(markdown, self.options)
+            .filter_map(|e| match e {
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
+                    if self.plugins.is_figure(Self::lang(&info)) =>
+                {
+                    Figure::label(&info)
+                }
+                _ => None,
+            })
+            .enumerate()
+            .map(|(i, (id, caption))| Figure {
+                id,
+                number: i + 1,
+                caption,
+            })
+            .collect()
+    }
+
     /// Renders Markdown as HTML, with each link's and image's target where `moved` says it is now, if it
     /// says, as a built site's pages are `.html` files rather than `.md`.
     #[must_use]
@@ -365,6 +427,14 @@ impl Renderer {
     /// Markdown rendered as `opts` asks.
     #[must_use]
     pub fn render_opts(&self, markdown: &str, opts: &Opts) -> Page {
+        // The figures are numbered first, so that a reference to one further down the page finds it.
+        let own;
+        let figures: &[Figure] = if let Some(given) = opts.figures {
+            given
+        } else {
+            own = self.figures(markdown);
+            &own
+        };
         let ranges = self.block_ranges(markdown);
         let (mut depth, mut block, mut open) = (0usize, 0usize, false);
         let mut ids = Ids::default();
@@ -397,13 +467,16 @@ impl Renderer {
                 }) => {
                     let inner = Self::inside(&mut events);
                     let heading = ids.heading(level, id, &inner);
-                    let inner = inner.into_iter().map(|e| self.math(e)).collect();
+                    let inner = inner
+                        .into_iter()
+                        .map(|e| self.math(Self::referred(e, figures, opts)))
+                        .collect();
                     out.extend(heading.events(classes, attrs, inner));
                     headings.push(heading);
                 }
                 Event::Start(Tag::CodeBlock(kind)) => {
                     let inner = Self::inside(&mut events);
-                    out.extend(self.code_block(kind, inner));
+                    out.extend(self.code_block(kind, inner, figures));
                 }
                 // A link to a page that is not there is marked, its target as written; its end is a link's end.
                 Event::Start(Tag::Link { dest_url, .. })
@@ -440,7 +513,7 @@ impl Renderer {
                 Event::Html(html) | Event::InlineHtml(html) if opts.safe => {
                     out.push(Event::Text(html));
                 }
-                event => out.push(self.math(event)),
+                event => out.push(self.math(Self::referred(event, figures, opts))),
             }
             if depth == 0 && open {
                 out.push(Event::Html("</div>".into()));
@@ -448,6 +521,78 @@ impl Renderer {
             }
         }
         Page::new(out, headings)
+    }
+
+    /// Text with its figure references as links, by their figures' numbers; any other event as it is.
+    fn referred<'a>(event: Event<'a>, figures: &[Figure], opts: &Opts) -> Event<'a> {
+        match event {
+            Event::Text(text) if text.contains('@') => {
+                match Self::refer(&text, figures, opts.elsewhere) {
+                    Some(html) => Event::InlineHtml(html.into()),
+                    None => Event::Text(text),
+                }
+            }
+            event => event,
+        }
+    }
+
+    /// Text with its figure references, `@fig:id` or `@page.md#fig:id`, as links named by the figure's number,
+    /// with its caption to hover; one to no figure is marked. None when the text has no reference.
+    fn refer(text: &str, figures: &[Figure], elsewhere: Option<Elsewhere>) -> Option<String> {
+        let mut out = String::new();
+        let mut rest = text;
+        let mut referred = false;
+        while let Some(at) = rest.find('@') {
+            let tail = &rest[at + 1..];
+            let len = tail
+                .find(|c: char| !(c.is_alphanumeric() || "_-./:#".contains(c)))
+                .unwrap_or(tail.len());
+            // A sentence's full stop or colon after a reference is not part of it.
+            let token = tail[..len].trim_end_matches(['.', ':']);
+            let (page, id) = token
+                .split_once('#')
+                .map_or((None, token), |(page, id)| (Some(page), id));
+            // An @ inside a word, as in an address, is not a reference.
+            let starts_word = rest[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric());
+            if !starts_word || id.len() <= "fig:".len() || !id.starts_with("fig:") {
+                out.push_str(&Self::escape(&rest[..=at]));
+                rest = tail;
+                continue;
+            }
+            out.push_str(&Self::escape(&rest[..at]));
+            let found = match page {
+                None => figures
+                    .iter()
+                    .find(|f| f.id == id)
+                    .map(|f| (format!("#{}", f.id), f.number, f.caption.clone())),
+                Some(page) => elsewhere.and_then(|elsewhere| elsewhere(page, id)),
+            };
+            let _ = match found {
+                Some((href, number, caption)) => {
+                    let on = page.map_or(String::new(), |page| {
+                        format!(" in {}", Self::escape(page.trim_end_matches(".md")))
+                    });
+                    write!(
+                        out,
+                        r#"<a class="fig-ref" href="{}" title="{}">Figure {number}{on}</a>"#,
+                        Self::escape(&href),
+                        Self::escape(&caption)
+                    )
+                }
+                None => write!(
+                    out,
+                    r#"<span class="fig-ref broken" title="No figure {token}">{token}?</span>"#,
+                    token = Self::escape(token)
+                ),
+            };
+            referred = true;
+            rest = &tail[token.len()..];
+        }
+        out.push_str(&Self::escape(rest));
+        referred.then_some(out)
     }
 
     /// Math, `$...$` or `$$...$$`, as the math plugin renders it, or as it was written when none does; any other
@@ -474,15 +619,21 @@ impl Renderer {
 
     /// A code block: a plugin's, as the plugin renders it; highlighted, when its language is known; or else as it
     /// was, for pulldown-cmark to escape.
-    fn code_block<'a>(&self, kind: CodeBlockKind<'a>, inner: Vec<Event<'a>>) -> Vec<Event<'a>> {
-        let lang = match &kind {
-            CodeBlockKind::Fenced(info) => Self::lang(info).to_string(),
-            CodeBlockKind::Indented => String::new(),
+    fn code_block<'a>(
+        &self,
+        kind: CodeBlockKind<'a>,
+        inner: Vec<Event<'a>>,
+        figures: &[Figure],
+    ) -> Vec<Event<'a>> {
+        let (lang, label) = match &kind {
+            CodeBlockKind::Fenced(info) => (Self::lang(info).to_string(), Figure::label(info)),
+            CodeBlockKind::Indented => (String::new(), None),
         };
         if let Some(plugin) = self.plugins.block(&lang) {
             let source = Self::plain_text(&inner);
+            let figure = label.and_then(|(id, _)| figures.iter().find(|f| f.id == id));
             return vec![Event::Html(
-                self.plugins.render_block(plugin, &source).into(),
+                self.plugins.render_block(plugin, &source, figure).into(),
             )];
         }
         match Self::highlight(&lang, &Self::plain_text(&inner)) {
@@ -1053,5 +1204,140 @@ mod tests {
             .html;
         assert!(html.contains(r#"class="broken" href="gone.md""#), "{html}");
         assert!(html.contains(r#"<a href="here.html">here</a>"#), "{html}");
+    }
+
+    /// A renderer with the plugins a site without git-kb.toml has, every built-in one: `TikZ` among them,
+    /// whose blocks are figures.
+    fn with_plugins() -> Renderer {
+        static PLUGINS: OnceLock<Plugins> = OnceLock::new();
+        Renderer::with_plugins(PLUGINS.get_or_init(|| {
+            Plugins::load(&crate::config::Config::default(), None, None)
+                .expect("the built-in plugins load")
+        }))
+    }
+
+    /// A page with two labelled diagrams and one unlabelled, referring to them.
+    const FIGURES: &str = concat!(
+        "# Title\n\nSee @fig:b, then @fig:a.\n\n",
+        "```tikz #fig:a \"First\"\n\\draw (0,0);\n```\n\n",
+        "```tikz\n\\draw (1,1);\n```\n\n",
+        "```tikz \"Second\" #fig:b\n\\draw (2,2);\n```\n",
+    );
+
+    #[test]
+    fn a_fence_s_label_is_its_id_and_caption_in_either_order() {
+        let label = |info| Figure::label(info);
+        assert_eq!(
+            label("tikz #fig:life \"Data life cycle\""),
+            Some(("fig:life".into(), "Data life cycle".into()))
+        );
+        assert_eq!(
+            label("tikz \"Cap\" #fig:x"),
+            Some(("fig:x".into(), "Cap".into()))
+        );
+        assert_eq!(label("tikz #fig:x"), Some(("fig:x".into(), String::new())));
+        assert_eq!(label("tikz"), None);
+        assert_eq!(label("rust ignore"), None);
+        assert_eq!(
+            label("tikz #tbl:x"),
+            None,
+            "only figures are labelled so far"
+        );
+    }
+
+    #[test]
+    fn labelled_figures_are_numbered_in_page_order() {
+        let figures = with_plugins().figures(FIGURES);
+        let said: Vec<(&str, usize, &str)> = figures
+            .iter()
+            .map(|f| (f.id.as_str(), f.number, f.caption.as_str()))
+            .collect();
+        assert_eq!(said, [("fig:a", 1, "First"), ("fig:b", 2, "Second")]);
+    }
+
+    #[test]
+    fn only_a_figure_plugin_s_blocks_are_figures() {
+        assert_eq!(
+            Renderer::new().figures(FIGURES),
+            [],
+            "no plugins, no figures"
+        );
+        assert_eq!(
+            with_plugins().figures("```rust #fig:a\nfn f() {}\n```\n"),
+            []
+        );
+    }
+
+    #[test]
+    fn a_labelled_figure_is_drawn_with_its_number_and_caption() {
+        let html = with_plugins().render(FIGURES).html;
+        assert!(html.contains(r#"data-plugin="tikz" id="fig:a""#), "{html}");
+        assert!(html.contains("<b>Figure 1</b>: First"), "{html}");
+        assert!(html.contains("<b>Figure 2</b>: Second"), "{html}");
+        assert_eq!(
+            html.matches("<figure").count(),
+            3,
+            "the unlabelled one too: {html}"
+        );
+    }
+
+    #[test]
+    fn a_figure_reference_is_a_link_named_by_the_figure_s_number() {
+        let html = with_plugins().render(FIGURES).html;
+        assert!(
+            html.contains(r##"See <a class="fig-ref" href="#fig:b" title="Second">Figure 2</a>, then <a class="fig-ref" href="#fig:a" title="First">Figure 1</a>."##),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_reference_to_no_figure_is_marked() {
+        let html = with_plugins().render("See @fig:none.\n").html;
+        assert!(
+            html.contains(
+                r#"<span class="fig-ref broken" title="No figure fig:none">fig:none?</span>."#
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_reference_to_another_page_s_figure_names_the_page() {
+        let elsewhere = |page: &str, id: &str| {
+            (page == "arch/overview.md" && id == "fig:life").then(|| {
+                (
+                    "overview.html#fig:life".to_string(),
+                    3,
+                    "Data life cycle".to_string(),
+                )
+            })
+        };
+        let html = with_plugins()
+            .render_opts(
+                "As @arch/overview.md#fig:life shows.\n",
+                &Opts {
+                    elsewhere: Some(&elsewhere),
+                    ..Opts::default()
+                },
+            )
+            .html;
+        assert!(
+            html.contains(r#"<a class="fig-ref" href="overview.html#fig:life" title="Data life cycle">Figure 3 in arch/overview</a> shows."#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn an_at_that_is_not_a_figure_reference_is_left_as_it_is() {
+        let html = with_plugins()
+            .render(&format!(
+                "{FIGURES}\nMail me@fig:a.com, or @someone, or `@fig:a`.\n\n```\n@fig:a\n```\n"
+            ))
+            .html;
+        assert!(
+            html.contains("Mail me@fig:a.com, or @someone, or <code>@fig:a</code>."),
+            "{html}"
+        );
+        assert!(html.contains("<pre><code>@fig:a\n</code></pre>"), "{html}");
     }
 }

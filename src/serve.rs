@@ -804,8 +804,25 @@ impl View<'_> {
         let renderer = &self.server.renderer;
         let broken =
             |dest: &str| Graph::join(file, dest).is_some_and(|page| !self.files.contains(&page));
+        // @other.md#fig:id: that page's figure, by its number, as a link to it.
+        let elsewhere = |path: &str, id: &str| -> Option<(String, usize, String)> {
+            let other = Graph::join(file, path).filter(|page| self.files.contains(page))?;
+            let other_text = String::from_utf8(self.read(&other).ok()?).ok()?;
+            let figure = renderer
+                .figures(&other_text)
+                .into_iter()
+                .find(|f| f.id == id)?;
+            let folder = file.parent().unwrap_or(Path::new(""));
+            let link = self.shell.link(folder, &other.with_extension("html"));
+            Some((
+                format!("{link}#{}", figure.id),
+                figure.number,
+                figure.caption,
+            ))
+        };
         let opts = Opts {
             broken: Some(&broken),
+            elsewhere: Some(&elsewhere),
             ..Opts::default()
         };
         let (Some(repo), Some(at)) = (

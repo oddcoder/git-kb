@@ -7,7 +7,7 @@ use std::fmt::Write;
 
 use similar::{Algorithm, DiffTag, capture_diff_slices};
 
-use crate::render::{Moved, Renderer};
+use crate::render::{Figure, Moved, Opts, Renderer};
 
 /// Two versions of a page compared: the newer, with what changed since the older marked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,19 +18,36 @@ pub struct Diff {
 }
 
 impl Diff {
+    /// A block of a page rendered alone, with the page's link references and figures, without its ids.
+    fn alone(
+        renderer: &Renderer,
+        block: &str,
+        refs: &str,
+        moved: Moved,
+        figures: &[Figure],
+    ) -> String {
+        let opts = Opts {
+            moved: Some(moved),
+            figures: Some(figures),
+            ..Opts::default()
+        };
+        Self::without_ids(
+            &renderer
+                .render_opts(&format!("{block}\n\n{refs}"), &opts)
+                .html,
+        )
+    }
+
     /// Two versions of a page compared, each block rendered as the page renders it, its links where `moved`
     /// says they are.
     #[must_use]
     pub fn pages(old: &str, new: &str, renderer: &Renderer, moved: Moved) -> Self {
         let (old_refs, new_refs) = (renderer.references(old), renderer.references(new));
         let (a, b) = (renderer.blocks(old), renderer.blocks(new));
-        let render = |block: &str, refs: &str| {
-            Self::without_ids(
-                &renderer
-                    .render_with(&format!("{block}\n\n{refs}"), moved)
-                    .html,
-            )
-        };
+        // A block rendered alone keeps its page's links and figures, by their numbers on that page.
+        let (old_figures, new_figures) = (renderer.figures(old), renderer.figures(new));
+        let old_block = |block: &str| Self::alone(renderer, block, &old_refs, moved, &old_figures);
+        let new_block = |block: &str| Self::alone(renderer, block, &new_refs, moved, &new_figures);
         let mut diff = Self {
             html: String::new(),
             changes: 0,
@@ -40,17 +57,17 @@ impl Diff {
             match tag {
                 DiffTag::Equal => {
                     for i in new_range {
-                        diff.html.push_str(&render(b[i], &new_refs));
+                        diff.html.push_str(&new_block(b[i]));
                     }
                 }
                 DiffTag::Delete => {
                     for i in old_range {
-                        diff.mark("del", &render(a[i], &old_refs));
+                        diff.mark("del", &old_block(a[i]));
                     }
                 }
                 DiffTag::Insert => {
                     for i in new_range {
-                        diff.mark("ins", &render(b[i], &new_refs));
+                        diff.mark("ins", &new_block(b[i]));
                     }
                 }
                 DiffTag::Replace => {
@@ -59,7 +76,7 @@ impl Diff {
                     for i in 0..olds.len().max(news.len()) {
                         match (olds.get(i), news.get(i)) {
                             (Some(o), Some(n)) => {
-                                let (o, n) = (render(o, &old_refs), render(n, &new_refs));
+                                let (o, n) = (old_block(o), new_block(n));
                                 if Self::prose(&o) && Self::prose(&n) && Self::alike(&o, &n) {
                                     diff.mark("chg", &Self::words(&o, &n));
                                 } else {
@@ -67,8 +84,8 @@ impl Diff {
                                     diff.mark("ins", &n);
                                 }
                             }
-                            (Some(o), None) => diff.mark("del", &render(o, &old_refs)),
-                            (None, Some(n)) => diff.mark("ins", &render(n, &new_refs)),
+                            (Some(o), None) => diff.mark("del", &old_block(o)),
+                            (None, Some(n)) => diff.mark("ins", &new_block(n)),
                             (None, None) => {}
                         }
                     }
@@ -98,11 +115,8 @@ impl Diff {
             return "<p class=\"muted\">The same as before.</p>".into();
         }
         let render = |block: &str, page: &str| {
-            Self::without_ids(
-                &renderer
-                    .render_with(&format!("{block}\n\n{}", renderer.references(page)), moved)
-                    .html,
-            )
+            let figures = renderer.figures(page);
+            Self::alone(renderer, block, &renderer.references(page), moved, &figures)
         };
         let new = render(block, new_page);
         let old = best
@@ -186,23 +200,21 @@ impl Diff {
         Self::likeness(&words(old), &words(new)) >= 0.5
     }
 
-    /// The share of two lists of words that they have in common, from 0 to 1.
     /// The share of two texts' words that they have in common, from 0 to 1. Words are compared without case or
     /// punctuation, so "Paragraph." and "paragraph," are the same word.
     #[must_use]
     pub fn similarity(a: &str, b: &str) -> f64 {
-        let words = |text: &str| -> Vec<String> {
-            text.split(|c: char| !c.is_alphanumeric())
+        let words = |t: &str| {
+            t.split(|c: char| !c.is_alphanumeric())
                 .filter(|w| !w.is_empty())
                 .map(str::to_lowercase)
-                .collect()
+                .collect::<Vec<_>>()
         };
         let (a, b) = (words(a), words(b));
-        let (a, b): (Vec<&str>, Vec<&str>) = (
-            a.iter().map(String::as_str).collect(),
-            b.iter().map(String::as_str).collect(),
-        );
-        Self::likeness(&a, &b)
+        Self::likeness(
+            &a.iter().map(String::as_str).collect::<Vec<_>>(),
+            &b.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
     }
 
     fn likeness(a: &[&str], b: &[&str]) -> f64 {
@@ -409,5 +421,31 @@ mod tests {
         assert!((Diff::similarity("The Paragraph.", "the paragraph,") - 1.0).abs() < 1e-9);
         assert!(Diff::similarity("one two three four", "one two five six") > 0.4);
         assert!(Diff::similarity("one two", "three four") < 1e-9);
+    }
+
+    #[test]
+    fn a_block_shown_alone_keeps_its_page_s_figure_numbers() {
+        static PLUGINS: std::sync::OnceLock<crate::plugins::Plugins> = std::sync::OnceLock::new();
+        let renderer = Renderer::with_plugins(PLUGINS.get_or_init(|| {
+            crate::plugins::Plugins::load(&crate::config::Config::default(), None, None).unwrap()
+        }));
+        let page = |said: &str| {
+            format!(
+                "```tikz #fig:a \"A\"\n\\draw (0,0);\n```\n\n```tikz #fig:b \"B\"\n\\draw (1,1);\n```\n\n{said}\n"
+            )
+        };
+        let diff = Diff::pages(
+            &page("See @fig:b."),
+            &page("See @fig:b, again."),
+            &renderer,
+            &|_| None,
+        );
+        assert!(
+            diff.html
+                .contains(r##"<a class="fig-ref" href="#fig:b" title="B">Figure 2</a>"##),
+            "{}",
+            diff.html
+        );
+        assert!(!diff.html.contains("fig-ref broken"), "{}", diff.html);
     }
 }

@@ -98,7 +98,10 @@ Plugins render what Markdown alone does not: fenced blocks such as ```` ```tikz 
 | `wavedrom` | ```` ```wavedrom ```` | WaveDrom draws timing diagrams, register bitfields and logic circuits in the browser, in the theme's colors |
 | `mathjax` | `$...$`, `$$...$$` | MathJax sets the math in the browser |
 
-A diagram plugin's blocks are *figures*: each shows its source under a bar, and can be clicked to zoom.
+A diagram plugin's blocks are *figures*:
+- Labelled on their fence, as in ```` ```mermaid #fig:flow "Data flow" ````, they are numbered in page order, and their number and caption show in the bar under them.
+- Text refers to them as `@fig:flow`, or `@other.md#fig:flow` for one on another page. Readers see "Figure 2", with the caption when pointed at; a reference to no such figure is marked.
+- Each shows its source under that bar, and can be clicked to zoom.
 
 ### Writing one
 
@@ -111,7 +114,7 @@ name = "graphviz"
 description = "Graphviz graphs, laid out by the dot command"
 blocks = ["dot"]            # the fence languages it renders
 math = false                # whether it renders $...$ and $$...$$; only one plugin may
-figure = true               # whether its blocks are figures: with their source under a bar, zoomable
+figure = true               # whether its blocks are figures: numbered, captioned, zoomable
 highlight = "text"          # how its source is highlighted, under the bar
 
 # When served and built: the source on the command's input, its SVG output the block.

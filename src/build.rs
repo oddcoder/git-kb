@@ -70,8 +70,9 @@ struct Past<'a> {
 /// and the site's history, when there is one.
 struct Within<'a> {
     shell: &'a Shell,
-    /// The site's files, to tell which pages there are.
+    /// The site's files, to tell which pages there are, and each page's text, as it is built.
     files: &'a [PathBuf],
+    read: &'a dyn Fn(&Path) -> Option<String>,
     pages: &'a Pages,
     graph: &'a Graph,
     readmes: &'a BTreeMap<PathBuf, String>,
@@ -243,13 +244,13 @@ impl Builder {
         // Every file first, so that each page knows, as it is rendered, which folders are shown by their
         // README: those with one and without an index.md, each with its README's page.
         let readmes = Self::readmes(files);
-        let text = |f: &Path| {
+        let text_of = |f: &Path| {
             read(f)
                 .ok()
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         };
-        let pages = Pages::new(files, &self.renderer, text);
-        let graph = Graph::new(files, &self.renderer, text);
+        let pages = Pages::new(files, &self.renderer, text_of);
+        let graph = Graph::new(files, &self.renderer, text_of);
         for path in files {
             let markdown = path
                 .extension()
@@ -275,6 +276,7 @@ impl Builder {
                 let within = Within {
                     shell,
                     files,
+                    read: &text_of,
                     pages: &pages,
                     graph: &graph,
                     readmes: &readmes,
@@ -400,9 +402,26 @@ impl Builder {
         let render = |body: &str| self.renderer.render_safe(body, &moved).html;
         let broken =
             |dest: &str| Graph::join(path, dest).is_some_and(|page| !within.files.contains(&page));
+        // @other.md#fig:id: that page's figure, by its number, as a link to it where it is built.
+        let elsewhere = |other: &str, id: &str| -> Option<(String, usize, String)> {
+            let page = Graph::join(path, other).filter(|page| within.files.contains(page))?;
+            let figure = self
+                .renderer
+                .figures(&(within.read)(&page)?)
+                .into_iter()
+                .find(|f| f.id == id)?;
+            let href = moved(other).unwrap_or_else(|| other.to_string());
+            let href = href.split('#').next().unwrap_or("");
+            Some((
+                format!("{href}#{}", figure.id),
+                figure.number,
+                figure.caption,
+            ))
+        };
         let opts = Opts {
             moved: Some(&moved),
             broken: Some(&broken),
+            elsewhere: Some(&elsewhere),
             ..Opts::default()
         };
         let notes = within

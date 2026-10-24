@@ -337,7 +337,8 @@ pre.diff-lines code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .listing li { padding: 6px 0; border-bottom: 1px solid var(--line); }
 .listing .folder::before { content: "▸ "; color: var(--muted); }
 
-/* Figures: diagrams of any plugin, on a paper with a faint grain, with their source in the bar under them. */
+/* Figures: diagrams of any plugin, on a paper with a faint grain, numbered and captioned in the bar under them,
+   with their source. */
 .kb-figure { margin: 40px 0 36px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .kb-figure:target { outline: 2px solid var(--accent); outline-offset: 2px; }
 .kb-stage, .kb-zoom svg {
@@ -365,6 +366,11 @@ pre.diff-lines code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .kb-zoom svg { display: block; width: 100%; height: 100%; border-radius: 8px; transform-origin: 0 0; cursor: grab;
                touch-action: none; }
 
+
+/* References to figures, by number, and a figure's number and caption in its bar. */
+.fig-caption b { color: var(--text); }
+.fig-ref { white-space: nowrap; }
+.fig-ref.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashed; cursor: help; }
 
 /* A link to a page that is not there. */
 a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashed; }

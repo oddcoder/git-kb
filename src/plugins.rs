@@ -7,7 +7,8 @@
 //! description = "Mermaid diagrams"
 //! blocks = ["mermaid"]         # the fence languages it renders
 //! math = false                 # whether it renders $...$ and $$...$$; one plugin may
-//! figure = true                # whether its blocks are figures: with their source under a bar, zoomable
+//! figure = true                # whether its blocks are figures: numbered when labelled, as in
+//!                              # ```mermaid #fig:flow "Data flow", with their source under a bar, zoomable
 //! highlight = "text"           # the language their source is highlighted as, under the bar
 //!
 //! # Rendered in the browser: the HTML each block becomes, which the plugin's scripts then draw.
@@ -50,7 +51,7 @@ use anyhow::{Context, anyhow, bail};
 use serde::Deserialize;
 
 use crate::config::Config;
-use crate::render::Renderer;
+use crate::render::{Figure, Renderer};
 
 /// A plugin's own files, by name.
 type Files = &'static [(&'static str, &'static [u8])];
@@ -309,10 +310,10 @@ impl Plugins {
         self.list.iter().find(|p| p.name == name)
     }
 
-    /// A block as its plugin renders it: a figure, with its source under a bar; or, for a plugin whose blocks are
-    /// not figures, the block alone.
+    /// A block as its plugin renders it: a figure, with its number and caption when labelled, and its source under
+    /// a bar; or, for a plugin whose blocks are not figures, the block alone.
     #[must_use]
-    pub fn render_block(&self, plugin: &Plugin, source: &str) -> String {
+    pub fn render_block(&self, plugin: &Plugin, source: &str, figure: Option<&Figure>) -> String {
         let stage = self.stage(plugin, source);
         let tag = Renderer::escape(&plugin.name);
         if !plugin.figure {
@@ -320,14 +321,30 @@ impl Plugins {
         }
         let code = Renderer::highlight(&plugin.highlight, source)
             .unwrap_or_else(|| Renderer::escape(source));
+        let (id, caption) = figure.map_or((String::new(), String::new()), |f| {
+            let caption = if f.caption.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", Renderer::escape(&f.caption))
+            };
+            (
+                format!(r#" id="{}""#, Renderer::escape(&f.id)),
+                format!(
+                    r#"<span class="fig-caption"><b>Figure {}</b>{caption}</span>"#,
+                    f.number
+                ),
+            )
+        });
         format!(
             concat!(
-                r#"<figure class="kb-figure kb-block" data-plugin="{tag}"><div class="kb-stage" title="Click to zoom">{stage}</div>"#,
-                r#"<details><summary class="kb-bar"><span class="kb-source">Source</span></summary>"#,
+                r#"<figure class="kb-figure kb-block" data-plugin="{tag}"{id}><div class="kb-stage" title="Click to zoom">{stage}</div>"#,
+                r#"<details><summary class="kb-bar">{caption}<span class="kb-source">Source</span></summary>"#,
                 r#"<pre><code>{code}</code></pre></details></figure>"#
             ),
             tag = tag,
+            id = id,
             stage = stage,
+            caption = caption,
             code = code,
         )
     }
@@ -722,7 +739,7 @@ pub(crate) mod tests {
         let (dir, given) = dots();
         let plugins = load(&dir, &[("dots", given)]).unwrap();
         let plugin = plugins.block("dots").unwrap();
-        let html = plugins.render_block(plugin, "a <b> c");
+        let html = plugins.render_block(plugin, "a <b> c", None);
         assert!(
             html.starts_with(
                 r#"<figure class="kb-figure kb-block" data-plugin="dots"><div class="kb-stage""#
@@ -835,10 +852,10 @@ pub(crate) mod tests {
         let plugin = plugins.block("raw").unwrap();
         assert!(
             plugins
-                .render_block(plugin, "x")
+                .render_block(plugin, "x", None)
                 .contains(r#"<script type="text/x-raw">x</script>"#)
         );
-        let html = plugins.render_block(plugin, "x</SCRIPT><b>");
+        let html = plugins.render_block(plugin, "x</SCRIPT><b>", None);
         assert!(html.contains("kb-error") && !html.contains("<b>"), "{html}");
         assert!(
             html.starts_with(r#"<div class="kb-block" data-plugin="raw">"#),
@@ -862,12 +879,16 @@ pub(crate) mod tests {
             Plugins::load(&config, Some(Path::new("git-kb.toml")), Some(cache.clone())).unwrap();
         let plugin = plugins.block("upper").unwrap();
         assert!(
-            plugins.render_block(plugin, "shout").contains(">SHOUT"),
+            plugins
+                .render_block(plugin, "shout", None)
+                .contains(">SHOUT"),
             "made"
         );
         assert_eq!(fs::read_dir(&cache).unwrap().count(), 1, "kept");
         assert!(
-            plugins.render_block(plugin, "shout").contains(">SHOUT"),
+            plugins
+                .render_block(plugin, "shout", None)
+                .contains(">SHOUT"),
             "taken from what was kept"
         );
     }
@@ -879,7 +900,7 @@ pub(crate) mod tests {
             &[],
         );
         let plugins = load(&dir, &[("gone", given)]).unwrap();
-        let html = plugins.render_block(plugins.block("gone").unwrap(), "x");
+        let html = plugins.render_block(plugins.block("gone").unwrap(), "x", None);
         assert!(
             html.contains("kb-error") && html.contains("not installed"),
             "{html}"
@@ -913,7 +934,7 @@ pub(crate) mod tests {
         let plugins = load(&dir, &[("tikz", given)]).unwrap();
         let tikz = plugins.block("tikz").unwrap();
         assert!(tikz.figure);
-        let html = plugins.render_block(tikz, "\\draw (0,0) -- (1,1);");
+        let html = plugins.render_block(tikz, "\\draw (0,0) -- (1,1);", None);
         assert!(
             html.contains(
                 r#"<script type="text/tikz" data-tikz-libraries="calc,fit" data-add-to-preamble=""#
@@ -942,7 +963,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let plugins = load(&dir, &[("mermaid", toml::Table::new())]).unwrap();
         let mermaid = plugins.block("mermaid").unwrap();
-        let html = plugins.render_block(mermaid, "graph TD; A-->B<C");
+        let html = plugins.render_block(mermaid, "graph TD; A-->B<C", None);
         assert!(
             html.contains(r#"<pre class="kb-mermaid">graph TD; A--&gt;B&lt;C</pre>"#),
             "{html}"
@@ -959,7 +980,8 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let plugins = load(&dir, &[("wavedrom", toml::Table::new())]).unwrap();
         let wavedrom = plugins.block("wavedrom").unwrap();
-        let html = plugins.render_block(wavedrom, "{signal: [{name: '<clk>', wave: 'p...'}]}");
+        let html =
+            plugins.render_block(wavedrom, "{signal: [{name: '<clk>', wave: 'p...'}]}", None);
         assert!(
             html.contains(r#"<pre class="kb-wavedrom-source">{signal: [{name: '&lt;clk&gt;', wave: 'p...'}]}</pre>"#),
             "{html}"
