@@ -94,6 +94,19 @@ impl Pages {
         (folders, pages)
     }
 
+    /// The page a name names, as a comment's `[[name]]` does: by its title or its path, whatever the case of
+    /// the letters.
+    #[must_use]
+    pub fn named(&self, name: &str) -> Option<&Path> {
+        let wanted = name.trim().trim_start_matches('/').to_lowercase();
+        self.titles
+            .iter()
+            .find(|(path, title)| {
+                title.to_lowercase() == wanted || path.to_string_lossy().to_lowercase() == wanted
+            })
+            .map(|(path, _)| path.as_path())
+    }
+
     /// A page's title, if it is one of the site's.
     #[must_use]
     pub fn title(&self, page: &Path) -> Option<&str> {

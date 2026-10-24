@@ -750,14 +750,17 @@ impl View<'_> {
             return ([(header::CONTENT_TYPE, kind.to_string())], bytes).into_response();
         }
         let text = String::from_utf8_lossy(&bytes);
-        let render = |body: &str| self.server.renderer.render_safe(body, &|_| None).html;
+        let at = file.parent().unwrap_or(Path::new(""));
+        let pages = self.pages();
+        let render = |body: &str| {
+            self.shell
+                .comment(&self.server.renderer, &pages, at, &|_| None, body)
+        };
         let notes = self
             .notes(file, &text, &render)
             .map(|notes| notes.composing(composing));
         let page = self.render(file, &text, &bytes, notes.as_ref());
         let title = page.title.unwrap_or_else(|| Server::stem(file));
-        let at = file.parent().unwrap_or(Path::new(""));
-        let pages = self.pages();
         let graph = self.graph();
         let nav = Nav {
             pages: &pages,
@@ -1974,5 +1977,15 @@ mod tests {
             shown.contains("kind-question") && shown.contains("🤖 AI"),
             "{shown}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_comment_s_wiki_links_go_to_the_pages_they_name() {
+        let git = commented("See [[B]], [[arch/c.md]] and [[Nope]].");
+        git.write("docs/b.md", "# B\n");
+        git.write("docs/arch/c.md", "# C\n");
+        git.commit("More pages");
+        let body = Site::of(git.top().join("docs")).get("/docs/a.html").await.2;
+        assert!(body.contains(r#"See <a href="/docs/b.html">B</a>, <a href="/docs/arch/c.html">arch/c.md</a> and <a class="broken" href="kb:Nope" title="No such page: kb:Nope">Nope</a>."#), "{body}");
     }
 }

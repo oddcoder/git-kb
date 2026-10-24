@@ -399,7 +399,8 @@ impl Builder {
     ) -> (String, String) {
         let (shell, pages) = (within.shell, within.pages);
         let moved = |dest: &str| Self::moved(path, dest, within.readmes);
-        let render = |body: &str| self.renderer.render_safe(body, &moved).html;
+        let at = path.parent().unwrap_or(Path::new(""));
+        let render = |body: &str| shell.comment(&self.renderer, pages, at, &moved, body);
         let broken =
             |dest: &str| Graph::join(path, dest).is_some_and(|page| !within.files.contains(&page));
         // @other.md#fig:id: that page's figure, by its number, as a link to it where it is built.

@@ -143,7 +143,8 @@ pub struct Opts<'a> {
     pub gutter: Option<Marks<'a>>,
     /// Which links name a page that is not there, to be marked.
     pub broken: Option<Broken<'a>>,
-    /// Whether the text is a reader's, as a comment is: its HTML is shown as text.
+    /// Whether the text is a reader's, as a comment is: its HTML is shown as text, and its `[[name]]` links are
+    /// links, to `kb:name`, for `moved` to say where.
     pub safe: bool,
     /// Another page's figure, for `@page.md#fig:id`.
     pub elsewhere: Option<Elsewhere<'a>>,
@@ -427,6 +428,13 @@ impl Renderer {
     /// Markdown rendered as `opts` asks.
     #[must_use]
     pub fn render_opts(&self, markdown: &str, opts: &Opts) -> Page {
+        let wiki;
+        let markdown = if opts.safe {
+            wiki = Self::wiki_links(markdown);
+            wiki.as_str()
+        } else {
+            markdown
+        };
         // The figures are numbered first, so that a reference to one further down the page finds it.
         let own;
         let figures: &[Figure] = if let Some(given) = opts.figures {
@@ -642,6 +650,26 @@ impl Renderer {
             )],
             None => Self::wrap(Tag::CodeBlock(kind), inner, TagEnd::CodeBlock),
         }
+    }
+
+    /// A reader's `[[name]]` links, as Markdown links to `kb:name`: `[name](<kb:name>)`.
+    fn wiki_links(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("[[") {
+            let Some(len) = rest[start + 2..].find("]]") else {
+                break;
+            };
+            let name = &rest[start + 2..start + 2 + len];
+            out.push_str(&rest[..start]);
+            if name.is_empty() || name.contains('\n') {
+                out.push_str(&rest[start..start + 4 + len]);
+            } else {
+                let _ = write!(out, "[{name}](<kb:{name}>)");
+            }
+            rest = &rest[start + 4 + len..];
+        }
+        out + rest
     }
 
     /// The events inside a tag that has just started, up to its end, which is taken too but not
@@ -1340,5 +1368,31 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("<pre><code>@fig:a\n</code></pre>"), "{html}");
+    }
+
+    #[test]
+    fn a_reader_s_wiki_links_are_links_for_moved_to_place() {
+        let moved = |dest: &str| dest.strip_prefix("kb:").map(|name| format!("/{name}.html"));
+        let html = Renderer::new()
+            .render_opts(
+                "See [[Overview]], not [[]].\n",
+                &Opts {
+                    safe: true,
+                    moved: Some(&moved),
+                    ..Opts::default()
+                },
+            )
+            .html;
+        assert!(
+            html.contains(r#"See <a href="/Overview.html">Overview</a>, not [[]]."#),
+            "{html}"
+        );
+        assert!(
+            Renderer::new()
+                .render("[[Overview]]")
+                .html
+                .contains("[[Overview]]"),
+            "a page's own text has no wiki links"
+        );
     }
 }

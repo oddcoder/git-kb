@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use super::{Links, Shell};
 use crate::comments::{Located, OnPage, State, Synced, Thread};
 use crate::git::When;
-use crate::render::Mark;
+use crate::nav::Pages;
+use crate::render::{Mark, Moved, Opts, Renderer};
 
 /// A page's comments as shown: its threads where they are on it, and how a comment's Markdown is rendered.
 pub struct Notes<'a> {
@@ -84,6 +85,33 @@ impl<'a> Notes<'a> {
 }
 
 impl Shell {
+    /// A comment's Markdown, rendered on a page in the folder `at`: any HTML in it shown as text, its `[[name]]`
+    /// links to the pages they name, by title or path, or marked when there is none, and its other links where
+    /// `moved` says, as the page's are.
+    #[must_use]
+    pub fn comment(
+        &self,
+        renderer: &Renderer,
+        pages: &Pages,
+        at: &Path,
+        moved: Moved,
+        body: &str,
+    ) -> String {
+        let named = |dest: &str| dest.strip_prefix("kb:").map(|name| pages.named(name));
+        let to = |dest: &str| match named(dest) {
+            Some(page) => page.map(|page| self.link(at, &page.with_extension("html"))),
+            None => moved(dest),
+        };
+        let missing = |dest: &str| named(dest).is_some_and(|page| page.is_none());
+        let opts = Opts {
+            moved: Some(&to),
+            broken: Some(&missing),
+            safe: true,
+            ..Opts::default()
+        };
+        renderer.render_opts(body, &opts).html
+    }
+
     /// Whether comments are written here: on the folder as it is, served; not at a commit, nor built.
     fn writes(&self) -> bool {
         self.links == Links::Served && self.revision.is_none()
