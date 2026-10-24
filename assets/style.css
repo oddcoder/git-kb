@@ -85,8 +85,8 @@
 html { background: var(--page); color: var(--text); }
 body { margin: 0; font: var(--text-size)/1.6 var(--text-font); }
 
-/* The bar: the site's name, linked to its top, and the Aa menu. */
-.bar { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 12px; height: 48px;
+/* The bar: the site's name, linked to its top, and the Aa menu; above the text's edges, as they scroll under it. */
+.bar { position: sticky; top: 0; z-index: 6; display: flex; align-items: center; gap: 12px; height: 48px;
        padding: 0 24px; border-bottom: 1px solid var(--line);
        background: color-mix(in srgb, var(--page) 92%, transparent); backdrop-filter: blur(8px); }
 .bar .site { color: var(--text); font-weight: 600; text-decoration: none; }
