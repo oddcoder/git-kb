@@ -183,9 +183,11 @@ ul.log, ul.refs { padding-left: 0; list-style: none; }
 .edge-left { left: 0; cursor: grab; }
 .edge-left.dragging { cursor: grabbing; }
 .edge-right { right: 0; }
-.edge-side { position: fixed; top: 48px; left: calc(var(--side-width, 260px) - 6px); }
+/* The sidebar's and the comments' edges sit inside them, their line on their border, clear of the text's edges. */
+.edge-side { position: fixed; top: 48px; left: calc(var(--side-width, 260px) - 12px); }
+.edge-side::after { left: auto; right: 0; }
 [data-side="hidden"] .edge-side { left: 0; }
-[data-side="hidden"] .edge-side::after { opacity: 0.25; }
+[data-side="hidden"] .edge-side::after { left: 0; right: auto; opacity: 0.25; }
 .dragging-layout, .dragging-layout * { cursor: col-resize !important; user-select: none; }
 .pop { resize: both; min-width: 240px; min-height: 60px; }
 
@@ -393,9 +395,10 @@ a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashe
 [data-rail="hidden"] .layout.has-rail { grid-template-columns: var(--side-width, 260px) minmax(0, 1fr); }
 [data-side="hidden"][data-rail="hidden"] .layout.has-rail { grid-template-columns: minmax(0, 1fr); }
 [data-rail="hidden"] .rail { display: none; }
-.edge-rail { position: fixed; top: 48px; right: calc(var(--rail-width, 340px) - 6px); }
+.edge-rail { position: fixed; top: 48px; right: calc(var(--rail-width, 340px) - 12px); }
+.edge-rail::after { left: 0; }
 [data-rail="hidden"] .edge-rail { right: 0; }
-[data-rail="hidden"] .edge-rail::after { opacity: 0.25; }
+[data-rail="hidden"] .edge-rail::after { left: auto; right: 0; opacity: 0.25; }
 @media (max-width: 1100px) { .edge-rail { display: none; } }
 .rail { position: sticky; top: 48px; align-self: start; max-height: calc(100vh - 48px); overflow-y: auto;
         padding: 16px; border-left: 1px solid var(--line); font-size: 14px; line-height: 1.45; }
