@@ -38,14 +38,15 @@ use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tracing::{debug, error, info, warn};
 
 use crate::build::{Builder, Folder};
-use crate::config::LookConfig;
+use crate::comments::Store;
+use crate::config::{CommentsConfig, LookConfig};
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
 use crate::live::Live;
 use crate::nav::{Nav, Pages};
 use crate::render::Renderer;
-use crate::shell::{self, Comparison, Links, Margin, PageHistory, Shell, Version};
+use crate::shell::{self, Comparison, Links, Margin, Notes, PageHistory, Shell, Version};
 
 /// Serves a folder of Markdown.
 #[derive(Debug)]
@@ -55,6 +56,8 @@ pub struct Server {
     shell: Shell,
     /// The repository the folder is in, if it is in one, for its commits.
     repo: Option<Repo>,
+    /// The review comments kept in it.
+    comments: Option<Store>,
     /// The site's changes, told to open pages.
     changes: broadcast::Sender<()>,
     /// Whether it is stopping, told to open pages' event streams, which would otherwise never end.
@@ -79,14 +82,29 @@ impl Server {
     #[must_use]
     pub fn new(root: PathBuf, title: Option<String>) -> Self {
         let shell = Shell::new(Builder::new(title, None).title(&root), Links::Served);
+        let repo = Repo::discover(&root);
+        let comments = repo
+            .as_ref()
+            .map(|repo| Store::new(repo, &CommentsConfig::default().namespace));
         Self {
-            repo: Repo::discover(&root),
+            repo,
+            comments,
             root,
             renderer: Renderer::new(),
             shell,
             changes: broadcast::channel(16).0,
             stopping: watch::channel(false).0,
         }
+    }
+
+    /// The same, keeping the review comments as `config` says.
+    #[must_use]
+    pub fn commenting(self, config: &CommentsConfig) -> Self {
+        let comments = self
+            .repo
+            .as_ref()
+            .map(|repo| Store::new(repo, &config.namespace));
+        Self { comments, ..self }
     }
 
     /// The same, serving pages in a look of their own.
@@ -502,7 +520,9 @@ impl View<'_> {
             return ([(header::CONTENT_TYPE, kind.to_string())], bytes).into_response();
         }
         let text = String::from_utf8_lossy(&bytes);
-        let page = self.render(file, &text, &bytes);
+        let render = |body: &str| self.server.renderer.render_safe(body, &|_| None).html;
+        let notes = self.notes(file, &text, &render);
+        let page = self.render(file, &text, &bytes, notes.as_ref());
         let title = page.title.unwrap_or_else(|| Server::stem(file));
         let at = file.parent().unwrap_or(Path::new(""));
         let pages = self.pages();
@@ -517,11 +537,42 @@ impl View<'_> {
             .shell
             .noted(at, file, &page.html, &self.page_history(file, &bytes));
         let body = Shell::with_source(&body, &self.server.renderer.source(&text));
-        Html(self.shell.page(at, "", &title, &body, &nav)).into_response()
+        let rail = notes
+            .map(|notes| self.shell.rail(&notes))
+            .unwrap_or_default();
+        Html(
+            self.shell
+                .page_with_rail(at, "", &title, &body, &nav, &rail),
+        )
+        .into_response()
     }
 
-    /// A page rendered, each block marked in its margin with when it last changed, when git knows.
-    fn render(&self, file: &Path, text: &str, bytes: &[u8]) -> crate::render::Page {
+    /// The comments on a page as shown, when there are any: at the commit shown, or, for the folder as it is,
+    /// the last.
+    fn notes<'r>(
+        &self,
+        file: &Path,
+        text: &str,
+        render: &'r dyn Fn(&str) -> String,
+    ) -> Option<Notes<'r>> {
+        let store = self.server.comments.as_ref()?;
+        let at = self.snapshot.as_ref().or(self.head.as_ref())?;
+        let on = store
+            .on_page(file, at.revision.id, text, &self.server.renderer)
+            .inspect_err(|e| warn!(page = %file.display(), "comments not read: {e:#}"))
+            .ok()?;
+        Some(Notes::new(on, text, render)).filter(|notes| !notes.is_empty())
+    }
+
+    /// A page rendered, each block marked in its margin with when it last changed, when git knows, and with its
+    /// comments.
+    fn render(
+        &self,
+        file: &Path,
+        text: &str,
+        bytes: &[u8],
+        notes: Option<&Notes>,
+    ) -> crate::render::Page {
         let renderer = &self.server.renderer;
         let (Some(repo), Some(at)) = (
             &self.server.repo,
@@ -535,7 +586,9 @@ impl View<'_> {
             return renderer.render(text);
         };
         let margin = Margin::new(&self.shell, file, text, &blame, repo, renderer, &|_| None);
-        renderer.render_marked(text, &|_| None, &|range| margin.mark(range))
+        renderer.render_marked(text, &|_| None, &|range| {
+            self.shell.marked(margin.mark(range.clone()), notes, &range)
+        })
     }
 
     /// A page's history, as a page: the commits that changed it.
@@ -1332,5 +1385,64 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let page = String::from_utf8_lossy(&body);
         assert!(page.contains("<title>DMA · pentasil</title>"), "{page}");
+    }
+
+    /// A repository whose docs/a.md has a thread on its last paragraph, begun by Ada with this comment.
+    fn commented(comment: &str) -> crate::git::tests::Git {
+        let git = crate::git::tests::Git::new();
+        git.run(&["config", "user.name", "Ada"]);
+        git.run(&["config", "user.email", "ada@x"]);
+        let page = "# A\n\nOne.\n\nTwo.\n";
+        git.write("docs/a.md", page);
+        git.commit("A page");
+        let repo = Repo::discover(&git.top().join("docs")).unwrap();
+        let begin = crate::comments::Begin {
+            page: Path::new("a.md"),
+            commit: repo.snapshot("HEAD").unwrap().revision.id,
+            text: page,
+            lines: 4..5,
+            snippet: crate::comments::Snippet::default(),
+        };
+        Store::new(&repo, &CommentsConfig::default().namespace)
+            .begin(&begin, comment)
+            .unwrap();
+        git
+    }
+
+    #[tokio::test]
+    async fn a_page_shows_its_comments_beside_it() {
+        let git = commented("Why **two**? <script>alert(1)</script>");
+        let body = Site::of(git.top().join("docs")).get("/docs/a.html").await.2;
+        assert!(body.contains("<div class=\"layout has-rail\">"), "{body}");
+        assert!(
+            body.contains("<aside class=\"rail\" aria-label=\"Comments\">"),
+            "{body}"
+        );
+        assert!(body.contains("Ada · 1 comment"), "{body}");
+        assert!(body.contains("Why <strong>two</strong>?"), "{body}");
+        assert!(
+            !body.contains("<script>alert"),
+            "a comment's HTML is text: {body}"
+        );
+        let marker = body
+            .find(r##"<a class="cmt" href="#t-"##)
+            .expect("a marker");
+        assert!(
+            body[marker..].starts_with(r##"<a class="cmt" href="#t-"##)
+                && body[marker..].contains("title=\"1 open thread\">💬 1</a>\n<p>Two.</p>"),
+            "the marker is on the paragraph the thread is on: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_without_comments_has_no_column() {
+        let git = commented("On a.md");
+        git.write("docs/b.md", "# B\n");
+        git.commit("Another page");
+        let body = Site::of(git.top().join("docs")).get("/docs/b.html").await.2;
+        assert!(
+            !body.contains("has-rail") && !body.contains("class=\"rail\""),
+            "{body}"
+        );
     }
 }

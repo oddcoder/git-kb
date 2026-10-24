@@ -13,12 +13,14 @@ use crate::config::LookConfig;
 use crate::git::Revision;
 use crate::nav::Nav;
 
+mod comments;
 mod compare;
 mod history;
 mod links;
 mod margin;
 mod search;
 
+pub use comments::Notes;
 pub use compare::{Comparison, Version};
 pub use history::{PageHistory, PageState};
 pub use margin::Margin;
@@ -164,6 +166,20 @@ impl Shell {
     /// the page itself; and what its sidebar shows.
     #[must_use]
     pub fn page(&self, at: &Path, file: &str, title: &str, body: &str, nav: &Nav) -> String {
+        self.page_with_rail(at, file, title, body, nav, "")
+    }
+
+    /// The same, with a column beside the text, as of the page's comments, when `rail` is not empty.
+    #[must_use]
+    pub fn page_with_rail(
+        &self,
+        at: &Path,
+        file: &str,
+        title: &str,
+        body: &str,
+        nav: &Nav,
+        rail: &str,
+    ) -> String {
         let window = if title == self.name {
             Self::escape(title)
         } else {
@@ -176,10 +192,10 @@ impl Shell {
                 "<title>{window}</title>\n{canonical}<link rel=\"stylesheet\" href=\"{style}\">\n",
                 "<script src=\"{script}\"></script>\n<script src=\"{layout}\"></script>\n<script src=\"{graph}\" defer></script>\n</head>\n<body>\n",
                 "<header class=\"bar\"><a class=\"site\" href=\"{top}\">{name}</a>{revision}{revisions}{search}</header>\n",
-                "<div class=\"layout\">\n{side}<main class=\"page\">\n{trail}{body}",
+                "<div class=\"layout{has_rail}\">\n{side}<main class=\"page\">\n{trail}{body}",
                 "<div class=\"edge edge-left\" title=\"Drag to move the text; let go near the middle to centre it\"></div>",
                 "<div class=\"edge edge-right\" title=\"Drag to set the text's width; double-click for the default\"></div>",
-                "</main>\n<div class=\"edge edge-side\" title=\"Drag to size the sidebar, or close it; double-click for the default\"></div>\n",
+                "</main>\n{rail}<div class=\"edge edge-side\" title=\"Drag to size the sidebar, or close it; double-click for the default\"></div>\n",
                 "</div>\n",
                 "{live}</body>\n</html>\n"
             ),
@@ -203,6 +219,8 @@ impl Shell {
             side = self.side(at, nav),
             trail = self.trail(at),
             body = body,
+            has_rail = if rail.is_empty() { "" } else { " has-rail" },
+            rail = rail,
         )
     }
 

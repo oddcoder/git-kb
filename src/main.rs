@@ -54,6 +54,7 @@ fn main() -> ExitCode {
                     runtime.block_on(
                         Server::new(config.root.clone(), config.title.clone())
                             .looking(config.look.clone())
+                            .commenting(&config.comments)
                             .run(address, async {
                                 tokio::signal::ctrl_c().await.unwrap_or(());
                                 tokio::spawn(async {
@@ -70,8 +71,9 @@ fn main() -> ExitCode {
         }
         Command::Build { .. } => {
             let out = &config.build.out;
-            let builder =
-                Builder::new(config.title.clone(), config.url.clone()).looking(config.look.clone());
+            let builder = Builder::new(config.title.clone(), config.url.clone())
+                .looking(config.look.clone())
+                .commenting(config.comments.clone());
             match builder.build(&config.root, out) {
                 Ok(built) => {
                     info!(root = %config.root.display(), refs = built.refs, pages = built.pages, files = built.files,

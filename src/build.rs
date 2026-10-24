@@ -20,15 +20,18 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use ignore::WalkBuilder;
-use tracing::debug;
+use tracing::{debug, warn};
 
-use crate::config::LookConfig;
+use crate::comments::Store;
+use crate::config::{CommentsConfig, LookConfig};
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
 use crate::nav::{Nav, Pages};
 use crate::render::{Moved, Renderer};
-use crate::shell::{self, Comparison, Links, Margin, PageHistory, PageState, Shell, Version};
+use crate::shell::{
+    self, Comparison, Links, Margin, Notes, PageHistory, PageState, Shell, Version,
+};
 
 /// What a build wrote.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -55,6 +58,8 @@ pub(crate) struct Folder {
 /// the last commit, to tell which pages have changed since.
 struct Past<'a> {
     repo: &'a Repo,
+    /// The review comments kept in it.
+    comments: &'a Store,
     /// The commit built: the last, for the folder as it is.
     at: Arc<Snapshot>,
     history: Arc<History>,
@@ -89,6 +94,7 @@ pub struct Builder {
     /// Where the site lives, ending in `/`, for its pages' canonical addresses.
     url: Option<String>,
     look: LookConfig,
+    comments: CommentsConfig,
 }
 
 impl Builder {
@@ -107,7 +113,14 @@ impl Builder {
             title,
             url,
             look: LookConfig::default(),
+            comments: CommentsConfig::default(),
         }
+    }
+
+    /// The same, showing the review comments kept as `config` says.
+    #[must_use]
+    pub fn commenting(self, comments: CommentsConfig) -> Self {
+        Self { comments, ..self }
     }
 
     /// The same, building sites in a look of their own.
@@ -130,14 +143,18 @@ impl Builder {
         // A folder in a repository without commits yet has no history.
         let repo = Repo::discover(&folder);
         let head = repo.as_ref().and_then(|repo| repo.snapshot("HEAD").ok());
+        let comments = repo
+            .as_ref()
+            .map(|repo| Store::new(repo, &self.comments.namespace));
         let shell = Shell::new(self.title(&folder), Links::Built)
             .living_at(self.url.clone())
             .looking(self.look.clone())
             .in_git(head.is_some());
 
-        let past = match (&repo, &head) {
-            (Some(repo), Some(head)) => Some(Past {
+        let past = match (&repo, &head, &comments) {
+            (Some(repo), Some(head), Some(comments)) => Some(Past {
                 repo,
+                comments,
                 at: Arc::clone(head),
                 history: repo.history(head)?,
                 head: Some(Arc::clone(head)),
@@ -157,6 +174,7 @@ impl Builder {
                 let to = out.join("ref").join(&snapshot.revision.name);
                 let of = Past {
                     repo,
+                    comments: past.comments,
                     at: Arc::clone(snapshot),
                     history: repo.history(snapshot)?,
                     head: None,
@@ -370,8 +388,12 @@ impl Builder {
     ) -> (String, String) {
         let (shell, pages) = (within.shell, within.pages);
         let moved = |dest: &str| Self::moved(path, dest, within.readmes);
+        let render = |body: &str| self.renderer.render_safe(body, &moved).html;
+        let notes = within
+            .past
+            .and_then(|past| self.notes(past, path, markdown, &render));
         let page = match within.past {
-            Some(past) => self.marked(shell, markdown, path, &moved, past),
+            Some(past) => self.marked(shell, markdown, path, &moved, past, notes.as_ref()),
             None => self.renderer.render_with(markdown, &moved),
         };
         let name = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -387,7 +409,27 @@ impl Builder {
         };
         let body = shell.noted(at, path, &page.html, history);
         let body = Shell::with_source(&body, &self.renderer.source(markdown));
-        (shell.page(at, &file, &title, &body, &nav), title)
+        let rail = notes.map(|notes| shell.rail(&notes)).unwrap_or_default();
+        (
+            shell.page_with_rail(at, &file, &title, &body, &nav, &rail),
+            title,
+        )
+    }
+
+    /// The comments on a page as built at a commit, when there are any.
+    fn notes<'r>(
+        &self,
+        past: &Past,
+        path: &Path,
+        markdown: &str,
+        render: &'r dyn Fn(&str) -> String,
+    ) -> Option<Notes<'r>> {
+        let on = past
+            .comments
+            .on_page(path, past.at.revision.id, markdown, &self.renderer)
+            .inspect_err(|e| warn!(page = %path.display(), "comments not read: {e:#}"))
+            .ok()?;
+        Some(Notes::new(on, markdown, render)).filter(|notes| !notes.is_empty())
     }
 
     /// A page rendered with each block marked in its margin with when it last changed.
@@ -398,6 +440,7 @@ impl Builder {
         path: &Path,
         moved: Moved,
         past: &Past,
+        notes: Option<&Notes>,
     ) -> crate::render::Page {
         // The folder as it is is blamed as it is on disk, its lines not committed yet as such.
         let now = past.head.is_some().then_some(markdown.as_bytes());
@@ -413,8 +456,9 @@ impl Builder {
             &self.renderer,
             moved,
         );
-        self.renderer
-            .render_marked(markdown, moved, &|range| margin.mark(range))
+        self.renderer.render_marked(markdown, moved, &|range| {
+            shell.marked(margin.mark(range.clone()), notes, &range)
+        })
     }
 
     /// A page's comparisons, beside it: what each commit that changed it changed, and, in the folder as it is,
@@ -1413,5 +1457,38 @@ mod tests {
             "{stub}"
         );
         assert!(stub.contains(r#"content="0; url=README.html""#), "{stub}");
+    }
+
+    #[test]
+    fn a_built_page_shows_its_comments_to_read() {
+        let git = crate::git::tests::Git::new();
+        git.run(&["config", "user.name", "Ada"]);
+        git.run(&["config", "user.email", "ada@x"]);
+        let page = "# A\n\nOne.\n\nTwo.\n";
+        git.write("docs/a.md", page);
+        git.commit("A page");
+        let repo = Repo::discover(&git.top().join("docs")).unwrap();
+        let begin = crate::comments::Begin {
+            page: Path::new("a.md"),
+            commit: repo.snapshot("HEAD").unwrap().revision.id,
+            text: page,
+            lines: 4..5,
+            snippet: crate::comments::Snippet::default(),
+        };
+        Store::new(&repo, &CommentsConfig::default().namespace)
+            .begin(&begin, "See [b](b.md).")
+            .unwrap();
+        let site = git.top().join("site");
+        Builder::default()
+            .build(&git.top().join("docs"), &site)
+            .unwrap();
+        for path in ["docs/a.html", "ref/main/a.html"] {
+            let html = fs::read_to_string(site.join(path)).unwrap();
+            assert!(html.contains("<aside class=\"rail\""), "{path}: {html}");
+            assert!(
+                html.contains(r#"See <a href="b.html">b</a>."#),
+                "a comment's links go where the page's do: {html}"
+            );
+        }
     }
 }

@@ -321,3 +321,42 @@ pre.diff-lines code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .listing { padding-left: 0; list-style: none; }
 .listing li { padding: 6px 0; border-bottom: 1px solid var(--line); }
 .listing .folder::before { content: "▸ "; color: var(--muted); }
+
+/* A page's comments, in a column beside it, as src/shell/comments.rs draws it: a card for each thread, in the order
+   of the page; and beside each block with threads, a marker linking to them. A resolved thread is hidden until Show
+   resolved is ticked. On a narrow screen, the column goes under the page. */
+.layout.has-rail { grid-template-columns: var(--side-width, 260px) minmax(0, 1fr) var(--rail-width, 340px); }
+[data-side="hidden"] .layout.has-rail { grid-template-columns: minmax(0, 1fr) var(--rail-width, 340px); }
+.rail { position: sticky; top: 48px; align-self: start; max-height: calc(100vh - 48px); overflow-y: auto;
+        padding: 16px; border-left: 1px solid var(--line); font-size: 14px; line-height: 1.45; }
+@media (max-width: 1100px) {
+  .layout.has-rail { grid-template-columns: var(--side-width, 260px) minmax(0, 1fr); }
+  [data-side="hidden"] .layout.has-rail { grid-template-columns: minmax(0, 1fr); }
+  .layout.has-rail .rail { grid-column: -2; position: static; max-height: none; border-left: 0;
+                           border-top: 1px solid var(--line); }
+}
+.rail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.rail-head h2, .rail-lost { margin: 0; padding: 0; border: 0; color: var(--muted); font-size: 12px; font-weight: 600;
+                            text-transform: uppercase; letter-spacing: 0.04em; }
+.rail-lost { margin: 24px 0 8px; }
+.rail-empty { margin: 0; font-size: 13px; }
+.show-resolved { color: var(--muted); font-size: 12px; cursor: pointer; }
+.thread + .thread, .rail-lost + .thread { margin-top: 10px; }
+.thread { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); }
+.thread > summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+.thread:target { border-color: var(--accent); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08); }
+.thread .on { margin: 8px 0; font-size: 13px; }
+.thread .muted { margin: 8px 0; font-size: 12px; }
+.thread .c { margin-top: 10px; }
+.thread .c-head { margin: 0 0 2px; font-size: 12px; color: var(--muted); }
+.thread .c-head b { color: var(--text); }
+.thread .c-body > :last-child { margin-bottom: 0; }
+.thread.resolved, .rail-lost.resolved { display: none; }
+html:has(#show-resolved:checked) .thread.resolved, html:has(#show-resolved:checked) .rail-lost.resolved { display: block; }
+html:has(#show-resolved:checked) .cmt.done { display: inline-block; }
+.cmt { position: absolute; top: 0; left: 100%; margin-left: 10px; padding: 0 6px; border: 1px solid var(--line);
+       border-radius: 11px; background: var(--subtle); color: var(--text); font-size: 12px; line-height: 20px;
+       white-space: nowrap; }
+.cmt:hover { border-color: var(--accent); text-decoration: none; }
+.cmt.done { display: none; background: none; color: var(--muted); }
+@media (max-width: 1100px) { .cmt { top: -20px; right: 0; left: auto; } }

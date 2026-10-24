@@ -296,6 +296,19 @@ impl Renderer {
     /// its mark, so that the block can show it.
     #[must_use]
     pub fn render_marked(&self, markdown: &str, moved: Moved, marks: Marks) -> Page {
+        self.rendered(markdown, moved, marks, false)
+    }
+
+    /// A reader's text, as a comment is, rendered: any HTML in it shown as text, so that it cannot run or
+    /// restyle the page it is shown on.
+    #[must_use]
+    pub fn render_safe(&self, markdown: &str, moved: Moved) -> Page {
+        self.rendered(markdown, moved, &|_| None, true)
+    }
+
+    /// Markdown rendered, its links and images where `moved` says, its blocks marked as `marks` says, and, when
+    /// it is a reader's, its HTML as text.
+    fn rendered(&self, markdown: &str, moved: Moved, marks: Marks, safe: bool) -> Page {
         let ranges = self.block_ranges(markdown);
         let (mut depth, mut block, mut open) = (0usize, 0usize, false);
         let mut ids = Ids::default();
@@ -357,6 +370,7 @@ impl Renderer {
                     title,
                     id,
                 })),
+                Event::Html(html) | Event::InlineHtml(html) if safe => out.push(Event::Text(html)),
                 event => out.push(event),
             }
             if depth == 0 && open {
@@ -798,6 +812,29 @@ mod tests {
                 .render("<details><summary>More</summary>\n\nHidden.\n\n</details>")
                 .html
                 .contains("<details>")
+        );
+    }
+
+    #[test]
+    fn a_reader_s_html_is_shown_as_text() {
+        let html = Renderer::new()
+            .render_safe(
+                "<script>alert(1)</script>\n\nSo <b>bold</b>, [a link](a.md).\n",
+                &|_| None,
+            )
+            .html;
+        assert!(
+            !html.contains("<script>") && !html.contains("<b>"),
+            "{html}"
+        );
+        assert!(html.contains("&lt;b&gt;bold&lt;/b&gt;"), "{html}");
+        assert!(html.contains(r#"<a href="a.md">a link</a>"#), "{html}");
+        assert!(
+            Renderer::new()
+                .render("So <b>bold</b>.")
+                .html
+                .contains("<b>bold</b>"),
+            "a page's own HTML is kept"
         );
     }
 }

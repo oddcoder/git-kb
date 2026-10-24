@@ -17,6 +17,9 @@
 //! [build]
 //! out = "target/git-kb"  # where the site is written
 //!
+//! [comments]
+//! namespace = "refs/git-kb/comments"  # each person's comments are <namespace>/<their email>
+//!
 //!
 //! [look]                 # how the pages look until a reader chooses in the Aa menu; web/src/look.ts's
 //! scheme = "auto"        # light, dark, or auto, as the reader's system is
@@ -48,6 +51,7 @@ pub struct Config {
     pub url: Option<String>,
     pub serve: ServeConfig,
     pub build: BuildConfig,
+    pub comments: CommentsConfig,
     pub look: LookConfig,
 }
 
@@ -59,7 +63,24 @@ impl Default for Config {
             url: None,
             serve: ServeConfig::default(),
             build: BuildConfig::default(),
+            comments: CommentsConfig::default(),
             look: LookConfig::default(),
+        }
+    }
+}
+
+/// Where the review comments are kept.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommentsConfig {
+    /// The refs each person's comments are under, by their email.
+    pub namespace: String,
+}
+
+impl Default for CommentsConfig {
+    fn default() -> Self {
+        Self {
+            namespace: "refs/git-kb/comments".into(),
         }
     }
 }
