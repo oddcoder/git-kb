@@ -6,6 +6,8 @@
 :root {
   color-scheme: light dark;
   --text-width: 46em;
+  /* Room right of the text for its blocks' comment markers, which are the text's, inside its edges. */
+  --marks: 0px;
   --text-size: 16px;
   --text-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
   --code-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
@@ -175,7 +177,7 @@ ul.log, ul.refs { padding-left: 0; list-style: none; }
 /* The layout, by dragging, as web/src/layout.ts keeps it: the sidebar's width, by its edge, or closed; the text's
    width, by its right edge; and where the text sits, by its left edge, centred unless placed. */
 /* Placed text keeps its place while there is room, and moves left when the columns beside it grow. */
-[data-placed] .page { margin-left: max(0px, min(var(--text-left, 0px), 100% - min(var(--text-width), 100%))); }
+[data-placed] .page { margin-left: max(0px, min(var(--text-left, 0px), 100% - min(var(--text-width) + var(--marks), 100%))); }
 .edge { position: absolute; top: 0; bottom: 0; z-index: 5; width: 12px; cursor: col-resize; touch-action: none; }
 .edge::after { content: ""; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; border-radius: 1px;
                background: var(--accent); opacity: 0; transition: opacity 0.15s; }
@@ -193,7 +195,8 @@ ul.log, ul.refs { padding-left: 0; list-style: none; }
 
 /* The page, and the trail of the folders it is in. */
 /* As wide as its column lets it, not as its content: a grid's item with auto margins would shrink to it. */
-.page { width: 100%; max-width: var(--text-width); margin: 0 auto; padding: 24px 24px 96px; }
+.page { width: 100%; max-width: calc(var(--text-width) + var(--marks)); margin: 0 auto;
+        padding: 24px calc(24px + var(--marks)) 96px 24px; }
 .crumbs { margin-bottom: 8px; color: var(--muted); font-size: 14px; }
 .crumbs a { color: var(--muted); }
 .crumbs .sep { margin: 0 6px; }
@@ -397,7 +400,7 @@ a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashe
 /* A page's comments, in a column beside it, as src/shell/comments.rs draws it: a card for each thread, in the order
    of the page; and beside each block with threads, a marker linking to them. A resolved thread is hidden until Show
    resolved is ticked. On a narrow screen, the column goes under the page. */
-.layout.has-rail { grid-template-columns: var(--side-width, 260px) minmax(0, 1fr) var(--rail-width, 340px); }
+.layout.has-rail { --marks: 80px; grid-template-columns: var(--side-width, 260px) minmax(0, 1fr) var(--rail-width, 340px); }
 [data-side="hidden"] .layout.has-rail { grid-template-columns: minmax(0, 1fr) var(--rail-width, 340px); }
 /* The column sized by its edge, as web/src/layout.ts keeps it, or closed, leaving its edge at the right to open it. */
 [data-rail="hidden"] .layout.has-rail { grid-template-columns: var(--side-width, 260px) minmax(0, 1fr); }
@@ -415,7 +418,7 @@ a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashe
 .rail-placed .rail-cards { position: relative; }
 .rail-placed .rail-cards > * { position: absolute; right: 0; left: 0; margin: 0; transition: top 0.2s; }
 @media (max-width: 1100px) {
-  .layout.has-rail { grid-template-columns: var(--side-width, 260px) minmax(0, 1fr); }
+  .layout.has-rail { --marks: 0px; grid-template-columns: var(--side-width, 260px) minmax(0, 1fr); }
   [data-side="hidden"] .layout.has-rail { grid-template-columns: minmax(0, 1fr); }
   .layout.has-rail .rail { grid-column: -2; position: static; max-height: none; border-left: 0;
                            border-top: 1px solid var(--line); }

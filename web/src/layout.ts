@@ -61,6 +61,8 @@ function draggable<S extends object>(edge: HTMLElement, { begin, move, done, res
 function hook(): void {
   const column = $('main.page');
   const columnBox = () => column?.getBoundingClientRect() ?? new DOMRect();
+  // The room in the column for its blocks' comment markers, right of the text: the text's width is without it.
+  const marks = () => (column ? parseFloat(getComputedStyle(column).getPropertyValue('--marks')) || 0 : 0);
   // The text's own column of the layout: from the sidebar's right, or the layout's left when it is closed, to the
   // comments' left, or the layout's right when there are none or they are closed.
   const cell = () => {
@@ -130,9 +132,9 @@ function hook(): void {
   const right = $('.edge-right');
   if (right) {
     draggable(right, {
-      begin: () => ({ width: columnBox().width, centred: !('placed' in root.dataset) }),
-      move: (dx, start) => px('--text-width', Math.min(room(), Math.max(TEXT.min, start.width + dx * (start.centred ? 2 : 1)))),
-      done: () => save({ width: Math.round(columnBox().width) }),
+      begin: () => ({ width: columnBox().width - marks(), centred: !('placed' in root.dataset) }),
+      move: (dx, start) => px('--text-width', Math.min(room() - marks(), Math.max(TEXT.min, start.width + dx * (start.centred ? 2 : 1)))),
+      done: () => save({ width: Math.round(columnBox().width - marks()) }),
       reset: () => { px('--text-width', null); save({ width: null }); },
     });
   }
