@@ -116,15 +116,30 @@ ul.results { padding-left: 0; list-style: none; }
                      font-weight: 600; letter-spacing: 0.02em; }
 .doc-head .status { padding: 1px 8px; border-radius: 999px; font-weight: 600; text-transform: capitalize;
                     background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--text); }
-.doc-head .status-review, .doc-head .status-running { background: color-mix(in srgb, #d4a72c 30%, transparent); }
-.doc-head .status-accepted, .doc-head .status-done, .doc-head .status-final, .doc-head .status-published,
-.doc-head .status-released { background: color-mix(in srgb, #2da44e 28%, transparent); }
-.doc-head .status-rejected { background: color-mix(in srgb, #cf222e 26%, transparent); }
-.doc-head .status-replaced { color: var(--muted); text-decoration: line-through; }
-.doc-head .status-planned { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+:is(.doc-head, .doc-list) .status.status-review, :is(.doc-head, .doc-list) .status.status-running { background: color-mix(in srgb, #d4a72c 30%, transparent); }
+:is(.doc-head, .doc-list) .status.status-accepted, :is(.doc-head, .doc-list) .status.status-done, :is(.doc-head, .doc-list) .status.status-final, :is(.doc-head, .doc-list) .status.status-published, :is(.doc-head, .doc-list) .status.status-released { background: color-mix(in srgb, #2da44e 28%, transparent); }
+:is(.doc-head, .doc-list) .status.status-rejected { background: color-mix(in srgb, #cf222e 26%, transparent); }
+:is(.doc-head, .doc-list) .status.status-replaced { color: var(--muted); text-decoration: line-through; }
+:is(.doc-head, .doc-list) .status.status-planned { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .doc-head .unknown, .doc-head .doctype[title] { border: 1px dashed var(--muted); }
 .doc-head .label { color: var(--muted); }
 .doc-head.unread { color: light-dark(#a8432f, #d9826f); cursor: help; }
+a.doctype { color: var(--text); text-decoration: none; }
+a.doctype:hover { border-color: var(--accent); }
+.cards .doc-head { margin: 0; font-style: normal; font-size: 12px; gap: 6px; }
+/* A doctype's list of its pages, and the choice of which statuses to show; and, atop the site's contents, a link to
+   each doctype's list. */
+.doc-filter { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; }
+.doc-filter label { cursor: pointer; text-transform: capitalize; }
+.doc-list { width: 100%; border-collapse: collapse; font-size: 15px; }
+.doc-list th, .doc-list td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.doc-list th { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.doc-list td:first-child { white-space: nowrap; color: var(--muted); }
+.doc-list .status { padding: 1px 8px; border-radius: 999px; font-size: 13px; font-weight: 600; text-transform: capitalize;
+                    background: color-mix(in srgb, var(--muted) 18%, transparent); }
+.doctypes { display: flex; flex-wrap: wrap; gap: 8px; }
+.doctypes a { padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); }
+.doctypes a:hover { border-color: var(--accent); text-decoration: none; }
 .meta { margin: -0.4em 0 1.2em; color: var(--muted); font-size: 13px; }
 .meta a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); }
 ul.log, ul.refs { padding-left: 0; list-style: none; }

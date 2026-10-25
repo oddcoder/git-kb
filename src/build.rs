@@ -314,11 +314,8 @@ impl Builder {
                 built.files += 1;
             }
         }
-        // The graph of every page and link.
         fs::create_dir_all(to)?;
-        let body = shell.graph_page(Path::new(""), &graph, &pages);
-        let page = shell.page(Path::new(""), "_graph.html", "Graph", &body, &Nav::none());
-        fs::write(to.join("_graph.html"), page)?;
+        Self::site_pages(shell, &pages, &graph, to)?;
         // Its search: a page that searches, in the browser, the index beside it.
         let index = crate::search::Index::new(files, &self.renderer, |f| {
             read(f)
@@ -635,6 +632,21 @@ impl Builder {
         }
     }
 
+    /// A site's pages of its own: the graph of every page and link, and each doctype's list of pages.
+    fn site_pages(shell: &Shell, pages: &Pages, graph: &Graph, to: &Path) -> anyhow::Result<()> {
+        let body = shell.graph_page(Path::new(""), graph, pages);
+        let page = shell.page(Path::new(""), "_graph.html", "Graph", &body, &Nav::none());
+        fs::write(to.join("_graph.html"), page)?;
+        for id in shell.doctype_ids() {
+            let body = shell.doctype_list(Path::new(""), &id, pages);
+            let file = format!("_doctype-{id}.html");
+            let title = shell.doctype_title(&id);
+            let page = shell.page(Path::new(""), &file, &title, &body, &Nav::none());
+            fs::write(to.join(&file), page)?;
+        }
+        Ok(())
+    }
+
     /// A folder's `index.html`, unless its `index.md` is it already: a page that redirects to its README's,
     /// or else a list of its folders and its pages, by title. Answers whether it wrote one.
     fn index(
@@ -677,6 +689,10 @@ impl Builder {
             .file_name()
             .map_or_else(|| "Contents".into(), |n| n.to_string_lossy().into_owned());
         let mut body = format!("<h1>{}</h1>\n", Self::escape(&name));
+        if path.as_os_str().is_empty() {
+            body.push_str(&shell.doctype_links(path, pages));
+        }
+        let listed = body.len();
         for (sub, here) in pages.under(path) {
             if !sub.as_os_str().is_empty() {
                 let _ = writeln!(
@@ -696,16 +712,17 @@ impl Builder {
                     .summary(page)
                     .map(|s| format!("<span>{}</span>", Self::escape(s)))
                     .unwrap_or_default();
+                let badges = shell.card_badges(pages.front(page));
                 let _ = writeln!(
                     body,
-                    "<li><a href=\"{}\"><strong>{}</strong>{about}</a></li>",
+                    "<li><a href=\"{}\">{badges}<strong>{}</strong>{about}</a></li>",
                     Self::link(&below),
                     Self::escape(title)
                 );
             }
             body.push_str("</ul>\n");
         }
-        if body.ends_with("</h1>\n") {
+        if body.len() == listed {
             body.push_str("<p class=\"muted\">No pages here yet.</p>\n");
         }
         let nav = Nav {
@@ -919,7 +936,9 @@ mod tests {
                 .filter(|e| !e.path().starts_with(root.join("_assets")))
                 .filter(|e| {
                     let name = e.file_name().to_string_lossy();
-                    !name.starts_with("_search.") && name != "_graph.html"
+                    !name.starts_with("_search.")
+                        && name != "_graph.html"
+                        && !name.starts_with("_doctype-")
                 })
                 .map(|e| {
                     e.path()

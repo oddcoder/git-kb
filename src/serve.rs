@@ -262,6 +262,9 @@ impl Server {
         if path == "/_graph" {
             return self.graph_page(query.unwrap_or(""));
         }
+        if let Some(id) = path.strip_prefix("/_doctypes/") {
+            return self.doctype_page(id, query.unwrap_or(""));
+        }
         if path == "/_comments" {
             return self.comments_page();
         }
@@ -565,6 +568,25 @@ impl Server {
             graph: None,
         };
         Html(view.shell.page(Path::new(""), "", "Graph", &body, &nav)).into_response()
+    }
+
+    /// A doctype's list of pages: in the folder as it is, or at the commit `ref` names.
+    fn doctype_page(&self, id: &str, query: &str) -> Response {
+        let view = match self.view_of(query) {
+            Ok(view) => view,
+            Err(answer) => return *answer,
+        };
+        let id = percent_decode_str(id).decode_utf8_lossy();
+        let pages = view.pages();
+        let body = view.shell.doctype_list(Path::new(""), &id, &pages);
+        let nav = Nav {
+            pages: &pages,
+            current: Path::new(""),
+            headings: &[],
+            graph: None,
+        };
+        let title = view.shell.doctype_title(&id);
+        Html(view.shell.page(Path::new(""), "", &title, &body, &nav)).into_response()
     }
 
     /// What a search finds: in the folder as it is, or at the commit `ref` names.

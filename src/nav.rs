@@ -128,6 +128,24 @@ impl Pages {
         self.fronts.get(page)
     }
 
+    /// The pages of a doctype, by their number, then their title: each with its title and its front matter.
+    #[must_use]
+    pub fn of_doctype(&self, id: &str) -> Vec<(&Path, &str, &Front)> {
+        let mut found: Vec<(&Path, &str, &Front)> = self
+            .fronts
+            .iter()
+            .filter(|(_, front)| front.doctype() == Some(id))
+            .map(|(path, front)| {
+                let title = self.titles.get(path).map_or("", String::as_str);
+                (path.as_path(), title, front)
+            })
+            .collect();
+        found.sort_by_key(|(_, title, front)| {
+            (front.number().unwrap_or(u64::MAX), title.to_lowercase())
+        });
+        found
+    }
+
     /// What a page is about, if it says.
     #[must_use]
     pub fn summary(&self, page: &Path) -> Option<&str> {
