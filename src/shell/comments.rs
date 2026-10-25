@@ -350,7 +350,7 @@ impl Shell {
                 "<input type=\"hidden\" name=\"prefix\" value=\"{prefix}\">",
                 "<input type=\"hidden\" name=\"suffix\" value=\"{suffix}\">",
                 "<input type=\"hidden\" name=\"back\" value=\"{back}\">",
-                "<textarea name=\"body\" rows=\"4\" required placeholder=\"Comment, in Markdown\" autofocus></textarea>",
+                "<textarea name=\"body\" rows=\"4\" required placeholder=\"Comment, in Markdown; paste or drop images in\" autofocus></textarea>",
                 "<p class=\"actions\"><button type=\"submit\">Comment</button> <a href=\"{back}\">Cancel</a></p></form>"
             ),
             quote = Self::escape(&quote),

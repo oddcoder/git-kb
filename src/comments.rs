@@ -12,6 +12,7 @@
 //! threads/<id>/comments/<stamp>.json   each comment
 //! threads/<id>/state/<stamp>.json      each resolve or reopen; the last says whether the thread is open
 //! texts/<blob>                         the page's source when a thread began, which may hold edits not committed
+//! files/<blob>.<ext>                   images in comments, pasted or dropped into them
 //! ```
 //!
 //! A stamp is when it was written, then a count and a random part, so that stamps sort in the order they were
@@ -46,6 +47,17 @@ use crate::render::Renderer;
 
 /// The longest comment taken, in bytes.
 pub const MAX_BODY: usize = 20_000;
+
+/// The largest image taken, in bytes.
+pub const MAX_IMAGE: usize = 5_000_000;
+
+/// The kinds of image taken, by the ending of their names and their types. Not SVG, which can carry scripts.
+pub const IMAGES: [(&str, &str); 4] = [
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+];
 
 /// What a thread an AI begins raises, as it says: a concern, a question, a suggestion or a note. People's threads
 /// have none.
@@ -512,6 +524,50 @@ impl Store {
             tips.push(reference.peel_to_id()?.detach());
         }
         Ok(tips)
+    }
+
+    /// Keeps an image with the comments, by its content, so that the same image is kept once, and gives its name
+    /// under `files/`, as `<blob>.png`, for a comment to show it by.
+    ///
+    /// # Errors
+    ///
+    /// When it is empty, too large or not of a kind taken, or the repository cannot be written.
+    pub fn image(&self, bytes: &[u8], kind: &str) -> anyhow::Result<String> {
+        let ending = IMAGES
+            .iter()
+            .find(|(_, k)| *k == kind)
+            .map(|(e, _)| *e)
+            .ok_or_else(|| anyhow!("an image is one of {}", IMAGES.map(|(_, k)| k).join(", ")))?;
+        anyhow::ensure!(!bytes.is_empty(), "the image is empty");
+        anyhow::ensure!(
+            bytes.len() <= MAX_IMAGE,
+            "an image is at most {} MB",
+            MAX_IMAGE / 1_000_000
+        );
+        let repo = self.git.to_thread_local();
+        let blob = repo.write_blob(bytes)?.detach();
+        let name = format!("{blob}.{ending}");
+        self.commit(&repo, &[(format!("files/{name}"), blob)], "Keep an image")?;
+        Ok(name)
+    }
+
+    /// An image kept with the comments, by its name under `files/`, from whoever's ref has it.
+    ///
+    /// # Errors
+    ///
+    /// When the refs cannot be read.
+    pub fn file(&self, name: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        if name.contains('/') {
+            return Ok(None);
+        }
+        let repo = self.git.to_thread_local();
+        for tip in self.tips(&repo)? {
+            let tree = repo.find_commit(tip)?.tree()?;
+            if let Some(entry) = tree.lookup_entry_by_path(format!("files/{name}"))? {
+                return Ok(Some(entry.object()?.detach().data));
+            }
+        }
+        Ok(None)
     }
 
     /// A comment's text, trimmed, if it is one to take.
@@ -1126,6 +1182,25 @@ mod tests {
             git_out(&git, &["cat-file", "-p", &thread.text.to_string()]),
             "# A\n\nOne.\n\nTwo.\n"
         );
+    }
+
+    #[test]
+    fn an_image_is_kept_once_by_its_content_and_read_back_by_its_name() {
+        let (_git, store) = site();
+        let name = store.image(b"\x89PNG fake", "image/png").unwrap();
+        assert_eq!(name.rsplit_once('.').map(|(_, e)| e), Some("png"), "{name}");
+        assert_eq!(store.image(b"\x89PNG fake", "image/png").unwrap(), name);
+        assert_eq!(
+            store.file(&name).unwrap().as_deref(),
+            Some(&b"\x89PNG fake"[..])
+        );
+        assert_eq!(store.file("nope.png").unwrap(), None);
+        assert_eq!(store.file("../threads").unwrap(), None);
+        assert!(
+            store.image(b"<svg/>", "image/svg+xml").is_err(),
+            "not SVG, which can carry scripts"
+        );
+        assert!(store.image(b"", "image/png").is_err());
     }
 
     #[test]

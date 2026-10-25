@@ -3,8 +3,9 @@
 // leads, and the other glides after it, so that a card stays level with its text. Hovering a card lights what it is
 // on, with a line to it, and the other way round. Without this script the cards simply follow one another, and the
 // column scrolls alone. What each card is on is lit in the text: the words it is on, or else its paragraph; clicking
-// them brings the card to them.
-import { $, $$ } from './dom';
+// them brings the card to them. An image pasted or dropped into a comment's box is kept with the comments, and
+// written into the comment as Markdown.
+import { $, $$, target } from './dom';
 
 const root = document.documentElement;
 // The parts of the page these work on, found again when live.ts swaps in a fresh copy of the page.
@@ -337,6 +338,36 @@ document.addEventListener('click', (e) => {
 });
 addEventListener('scroll', connect, { passive: true });
 document.addEventListener('scroll', connect, { capture: true, passive: true });
+
+// An image pasted or dropped into a box: sent to be kept, while the box says so where it will be, then written in
+// its place as Markdown, or, if it was not taken, why.
+async function keep(image: Blob, box: HTMLTextAreaElement, name: string): Promise<void> {
+  const waiting = `![${name}, being kept…]()`;
+  box.setRangeText(waiting, box.selectionStart, box.selectionEnd, 'end');
+  let said: string;
+  try {
+    const res = await fetch('/_comments/upload', { method: 'POST', headers: { 'Content-Type': image.type }, body: image });
+    said = res.ok ? `![${name}](${await res.text()})` : `(${name} was not kept: ${await res.text()})`;
+  } catch (e) {
+    said = `(${name} was not kept: ${e instanceof Error ? e.message : String(e)})`;
+  }
+  box.value = box.value.replace(waiting, said);
+}
+const boxOf = (e: Event) => target(e)?.closest<HTMLTextAreaElement>('.rail textarea') ?? null;
+const images = (files: FileList | undefined) => [...(files ?? [])].filter((f) => f.type.startsWith('image/'));
+document.addEventListener('paste', (e) => {
+  const box = boxOf(e), found = images(e.clipboardData?.files);
+  if (!box || !found.length) return;
+  e.preventDefault();
+  for (const image of found) void keep(image, box, 'image');
+});
+document.addEventListener('dragover', (e) => { if (boxOf(e)) e.preventDefault(); });
+document.addEventListener('drop', (e) => {
+  const box = boxOf(e), found = images(e.dataTransfer?.files);
+  if (!box || !found.length) return;
+  e.preventDefault();
+  for (const image of found) void keep(image, box, image.name.replace(/[[\]]/g, ''));
+});
 
 // Cards placed again whenever any grows or shrinks, as a reply box opens or a thread folds, and when the page does.
 let pending = false;

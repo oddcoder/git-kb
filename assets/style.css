@@ -455,6 +455,7 @@ a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashe
 .thread .c-head { margin: 0 0 2px; font-size: 12px; color: var(--muted); }
 .thread .c-head b { color: var(--text); }
 .thread .c-body > :last-child { margin-bottom: 0; }
+.thread .c-body img { max-width: 100%; height: auto; border-radius: 4px; }
 .thread.resolved, .rail-lost.resolved { display: none; }
 html:has(#show-resolved:checked) .thread.resolved, html:has(#show-resolved:checked) .rail-lost.resolved { display: block; }
 .cmts { position: absolute; top: 0; bottom: 0; left: 100%; display: flex; align-items: flex-start; gap: 6px;

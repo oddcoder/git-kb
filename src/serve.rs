@@ -208,7 +208,11 @@ impl Server {
                         .await
                         .unwrap_or_else(|e| Self::broke(&e.into()))
                     },
-                ),
+                )
+                // As large as an image taken, which is sent here too.
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::comments::MAX_IMAGE + 1024,
+                )),
             )
             .merge(Self::agent_routes())
             .fallback(|State(server): State<Arc<Self>>, uri: Uri| async move {
@@ -250,6 +254,9 @@ impl Server {
         }
         if path == "/_comments" {
             return self.comments_page();
+        }
+        if let Some(name) = path.strip_prefix("/_comments/files/") {
+            return self.comment_file(name);
         }
         if let Some(rest) = path.strip_prefix("/_plugins/") {
             return self.plugin_file(rest);
@@ -328,6 +335,7 @@ impl Server {
     /// the page, at the thread. Only the site's own pages may write: a browser sent here from another site says
     /// so, and is refused.
     fn comment(&self, action: &str, headers: &HeaderMap, form: &[u8]) -> Response {
+        let bytes = form;
         let form = String::from_utf8_lossy(form);
         let field = |name| Self::param(&form, name).unwrap_or_default();
         if !Self::same_site(headers) {
@@ -344,6 +352,17 @@ impl Server {
             )
                 .into_response();
         };
+        // An image pasted or dropped into a comment, kept with the comments; it is answered with where it is.
+        if action == "upload" {
+            let kind = headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default();
+            return match store.image(bytes, kind) {
+                Ok(name) => format!("/_comments/files/{name}").into_response(),
+                Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+            };
+        }
         let done = match action {
             "sync" => {
                 self.sync();
@@ -375,6 +394,30 @@ impl Server {
                 Redirect::to(&format!("{back}{at}")).into_response()
             }
             Err(e) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
+        }
+    }
+
+    /// An image kept with the comments, by its name; as it is named by its content, it never changes.
+    fn comment_file(&self, name: &str) -> Response {
+        let kind = crate::comments::IMAGES
+            .iter()
+            .find(|(ending, _)| name.rsplit_once('.').is_some_and(|(_, e)| e == *ending))
+            .map(|(_, kind)| *kind);
+        let found = self
+            .comments
+            .as_ref()
+            .zip(kind)
+            .and_then(|(store, kind)| Some((store.file(name).ok()??, kind)));
+        match found {
+            Some((bytes, kind)) => (
+                [
+                    (header::CONTENT_TYPE, kind),
+                    (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                ],
+                bytes,
+            )
+                .into_response(),
+            None => self.missing("No such image."),
         }
     }
 
@@ -1774,6 +1817,51 @@ mod tests {
         assert!(
             !then.contains("has-rail") && !then.contains("class=\"rail\""),
             "{then}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_image_pasted_into_a_comment_is_kept_and_shown() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        let upload = |kind: &'static str, from: &'static str| {
+            let router = Arc::new(Server::new(site.docs.clone(), None)).router();
+            async move {
+                let request = Request::post("/_comments/upload")
+                    .header("sec-fetch-site", from)
+                    .header(header::CONTENT_TYPE, kind)
+                    .body(Body::from(&b"\x89PNG fake"[..]))
+                    .unwrap();
+                let response = router.oneshot(request).await.unwrap();
+                let status = response.status();
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                (status, String::from_utf8_lossy(&body).into_owned())
+            }
+        };
+        let (status, at) = upload("image/png", "same-origin").await;
+        assert_eq!(status, StatusCode::OK, "{at}");
+        assert!(
+            at.starts_with("/_comments/files/")
+                && at.rsplit_once('.').is_some_and(|(_, e)| e == "png"),
+            "{at}"
+        );
+        let (status, kind, body) = site.get(&at).await;
+        assert_eq!((status, kind.as_str()), (StatusCode::OK, "image/png"));
+        assert_eq!(body, String::from_utf8_lossy(b"\x89PNG fake"));
+        assert_eq!(
+            upload("image/svg+xml", "same-origin").await.0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            upload("image/png", "cross-site").await.0,
+            StatusCode::FORBIDDEN
+        );
+        let form = format!("page=a.md&lines=2-3&back=%2Fdocs%2Fa.html&body=See+![it]({at})");
+        site.post("/_comments/new", "same-origin", &form).await;
+        let page = site.get("/docs/a.html").await.2;
+        assert!(
+            page.contains(&format!("<img src=\"{at}\" alt=\"it\"")),
+            "{page}"
         );
     }
 
