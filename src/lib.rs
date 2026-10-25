@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod build;
+pub mod check;
 pub mod cli;
 pub mod comments;
 pub mod config;
