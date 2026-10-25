@@ -49,18 +49,23 @@ pub const GRAPH_PATH: &str = "_assets/graph.js";
 pub const LIVE: &str = include_str!(concat!(env!("OUT_DIR"), "/live.js"));
 pub const LIVE_PATH: &str = "_assets/live.js";
 
-/// The files every page uses, by their paths in the site.
+/// The script that puts each comment's card level with what it is on, compiled from `web/src/comments.ts`.
+pub const COMMENTS: &str = include_str!(concat!(env!("OUT_DIR"), "/comments.js"));
+pub const COMMENTS_PATH: &str = "_assets/comments.js";
+
 /// The script of plugins' figures, compiled from `web/src/figures.ts`: their zoom.
 pub const FIGURES: &str = include_str!(concat!(env!("OUT_DIR"), "/figures.js"));
 pub const FIGURES_PATH: &str = "_assets/figures.js";
 
-pub const ASSETS: [(&str, &str); 7] = [
+/// The files every page uses, by their paths in the site.
+pub const ASSETS: [(&str, &str); 8] = [
     (STYLE_PATH, STYLE),
     (LOOK_PATH, LOOK),
     (LAYOUT_PATH, LAYOUT),
     (SEARCH_PATH, SEARCH),
     (GRAPH_PATH, GRAPH),
     (LIVE_PATH, LIVE),
+    (COMMENTS_PATH, COMMENTS),
     (FIGURES_PATH, FIGURES),
 ];
 
@@ -208,6 +213,13 @@ impl Shell {
             live = match (self.links, &self.revision) {
                 (Links::Served, None) => format!("<script src=\"/{LIVE_PATH}\" defer></script>\n"),
                 _ => String::new(),
+            } + &if rail.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<script src=\"{}\" defer></script>\n",
+                    self.asset(at, COMMENTS_PATH)
+                )
             },
             revision = self.badge(at),
             revisions = self.revisions_link(at),

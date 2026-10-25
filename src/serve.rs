@@ -1759,7 +1759,7 @@ mod tests {
         let git = commented("First");
         let site = Site::of(git.top().join("docs"));
         let composing = site.get("/docs/a.html?comment=2-3").await.2;
-        assert!(composing.contains(r#"<form class="composer thread" id="composer" method="post" action="/_comments/new">"#), "{composing}");
+        assert!(composing.contains(r#"<form class="composer thread" id="composer" data-line="2" method="post" action="/_comments/new">"#), "{composing}");
         assert!(
             composing.contains("<blockquote class=\"on\">One.</blockquote>"),
             "{composing}"

@@ -190,10 +190,18 @@ impl Shell {
                 l.thread.comments.first().map_or(0, |c| c.time),
             )
         });
-        let mut cards = String::new();
+        // The cards of what is on the page, each with the line it is on, for web/src/comments.ts to put it level
+        // with it; and the box to begin a thread in among them, as it is on a line too.
+        let mut cards = format!("<div class=\"rail-cards\">{}", self.composer(notes));
         for located in &found {
-            cards.push_str(&self.thread(notes, &located.thread, Some(located.state)));
+            let card = self.thread(notes, &located.thread, Some(located.state));
+            cards.push_str(&card.replacen(
+                "<details ",
+                &format!("<details data-line=\"{}\" ", located.lines.start),
+                1,
+            ));
         }
+        cards.push_str("</div>");
         if !notes.on.lost.is_empty() {
             let all_resolved = notes.on.lost.iter().all(|t| t.resolved);
             let _ = write!(
@@ -222,7 +230,6 @@ impl Shell {
             (0, false) => "<p class=\"muted rail-empty\">No open comments.</p>",
             _ => "",
         };
-        let composer = self.composer(notes);
         let sync = self.sync_form(notes);
         let all = if self.writes() {
             "<a class=\"all-comments\" href=\"/_comments\">All comments</a>"
@@ -230,7 +237,7 @@ impl Shell {
             ""
         };
         format!(
-            "<aside class=\"rail\" aria-label=\"Comments\"><div class=\"rail-head\"><h2>Comments</h2>{all}{show}</div>{sync}{composer}{empty}{cards}</aside>\n<div class=\"edge edge-rail\" title=\"Drag to size the comments, or close them; double-click for the default\"></div>\n"
+            "<aside class=\"rail\" aria-label=\"Comments\"><div class=\"rail-head\"><h2>Comments</h2>{all}{show}</div>{sync}{empty}{cards}</aside>\n<div class=\"edge edge-rail\" title=\"Drag to size the comments, or close them; double-click for the default\"></div>\n"
         )
     }
 
@@ -337,7 +344,7 @@ impl Shell {
         let back = Self::escape(&Self::served(&notes.page));
         format!(
             concat!(
-                "<form class=\"composer thread\" id=\"composer\" method=\"post\" action=\"/_comments/new\">",
+                "<form class=\"composer thread\" id=\"composer\" data-line=\"{start}\" method=\"post\" action=\"/_comments/new\">",
                 "<blockquote class=\"on\">{quote}</blockquote>",
                 "<input type=\"hidden\" name=\"page\" value=\"{page}\">",
                 "<input type=\"hidden\" name=\"lines\" value=\"{start}-{end}\">",
