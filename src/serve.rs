@@ -280,6 +280,9 @@ impl Server {
         if path == "/llms.txt" || path == "/_ai" || path.starts_with("/_ai/") {
             return self.agent_answer(path, query.unwrap_or(""));
         }
+        if let Some(answer) = self.by_number(path, query.unwrap_or("")) {
+            return answer;
+        }
         let (snapshot, rest) = if let Some(rest) = path.strip_prefix("/docs") {
             if rest.is_empty() {
                 return Redirect::permanent("/docs/").into_response();
@@ -571,6 +574,45 @@ impl Server {
             graph: None,
         };
         Html(view.shell.page(Path::new(""), "", "Graph", &body, &nav)).into_response()
+    }
+
+    /// A page by its doctype and number, as `/design/12`, sent on to it; or, as `/design`, its doctype's list. At
+    /// the commit `ref` names, if it names one. None for a path that is not a doctype's.
+    fn by_number(&self, path: &str, query: &str) -> Option<Response> {
+        let mut parts = path.trim_matches('/').split('/');
+        let id = percent_decode_str(parts.next()?)
+            .decode_utf8_lossy()
+            .into_owned();
+        let number = parts.next();
+        if parts.next().is_some() || !self.shell.doctype_ids().contains(&id) {
+            return None;
+        }
+        let Some(number) = number else {
+            let to = match Self::param(query, "ref") {
+                Some(name) => format!("/_doctypes/{id}?ref={}", shell::Shell::encode_id(&name)),
+                None => format!("/_doctypes/{id}"),
+            };
+            return Some(Redirect::temporary(&to).into_response());
+        };
+        let Ok(number) = number.parse::<u64>() else {
+            return Some(self.missing(&format!("A {id} is found by its number, as /{id}/1.")));
+        };
+        let view = match self.view_of(query) {
+            Ok(view) => view,
+            Err(answer) => return Some(*answer),
+        };
+        let pages = view.pages();
+        let found = pages
+            .of_doctype(&id)
+            .into_iter()
+            .find(|(_, _, front)| front.number() == Some(number));
+        Some(match found {
+            Some((page, _, _)) => {
+                Redirect::temporary(&view.shell.link(Path::new(""), &page.with_extension("html")))
+                    .into_response()
+            }
+            None => self.missing(&format!("No page is {id} number {number}.")),
+        })
     }
 
     /// Every page whose front matter is not as its doctype's schema says: in the folder as it is, or at the commit
@@ -1138,12 +1180,39 @@ mod tests {
     struct Site {
         docs: PathBuf,
         _made: Option<tempfile::TempDir>,
+        doctypes: Doctypes,
     }
 
     impl Site {
+        /// The same, with these doctypes.
+        fn typed(self, doctypes: &[(&str, serde_json::Value)]) -> Self {
+            let config = doctypes
+                .iter()
+                .map(|(id, schema)| {
+                    let doctype = crate::config::DoctypeConfig {
+                        schema: schema.clone(),
+                        ..crate::config::DoctypeConfig::default()
+                    };
+                    ((*id).to_string(), doctype)
+                })
+                .collect();
+            Self {
+                doctypes: crate::schema::doctypes(&config),
+                ..self
+            }
+        }
+
+        fn server(&self) -> Server {
+            Server::new(self.docs.clone(), None).typing(self.doctypes.clone())
+        }
+
         /// A server of a folder made elsewhere, which outlives it.
         fn of(docs: PathBuf) -> Self {
-            Self { docs, _made: None }
+            Self {
+                docs,
+                _made: None,
+                doctypes: Doctypes::default(),
+            }
         }
 
         fn with(files: &[(&str, &[u8])]) -> Self {
@@ -1157,13 +1226,14 @@ mod tests {
             Self {
                 docs: dir.path().join("docs"),
                 _made: Some(dir),
+                doctypes: Doctypes::default(),
             }
         }
 
         /// The status, and where it redirects or else its body, of the answer to a form posted, from a page
         /// whose browser says it is `from`, as `same-origin` or `cross-site`.
         async fn post(&self, path: &str, from: &str, form: &str) -> (StatusCode, String) {
-            let router = Arc::new(Server::new(self.docs.clone(), None)).router();
+            let router = Arc::new(self.server()).router();
             let request = Request::post(path)
                 .header("sec-fetch-site", from)
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
@@ -1180,9 +1250,28 @@ mod tests {
             (status, said)
         }
 
+        /// The status of a GET, and where it is sent on to, or else its body.
+        async fn get_sent_on(&self, path: &str) -> (StatusCode, String) {
+            let router = Arc::new(self.server()).router();
+            let response = router
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let to = response
+                .headers()
+                .get(header::LOCATION)
+                .map(|v| v.to_str().unwrap().to_owned());
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            (
+                status,
+                to.unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned()),
+            )
+        }
+
         /// The status, and the body, of the answer to JSON posted, as an agent posts it.
         async fn post_json(&self, path: &str, json: &str) -> (StatusCode, String) {
-            let router = Arc::new(Server::new(self.docs.clone(), None)).router();
+            let router = Arc::new(self.server()).router();
             let request = Request::post(path)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(json.to_owned()))
@@ -1195,7 +1284,7 @@ mod tests {
 
         /// The status, content type, and body or else where it redirects, of the answer to a request.
         async fn get(&self, path: &str) -> (StatusCode, String, String) {
-            let router = Arc::new(Server::new(self.docs.clone(), None)).router();
+            let router = Arc::new(self.server()).router();
             let response = router
                 .oneshot(Request::get(path).body(Body::empty()).unwrap())
                 .await
@@ -1933,6 +2022,52 @@ mod tests {
         assert!(
             page.contains(&format!("<img src=\"{at}\" alt=\"it\"")),
             "{page}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_is_found_by_its_doctype_and_number() {
+        let site = Site::with(&[
+            (
+                "docs/designs/tiling.md",
+                b"---\ndoctype: design\nnumber: 2\n---\n# Tiling\n",
+            ),
+            (
+                "docs/guide.md",
+                b"---\ndoctype: guide\nnumber: 2\n---\n# Guide\n",
+            ),
+        ])
+        .typed(&[
+            ("design", serde_json::json!(true)),
+            ("guide", serde_json::json!(true)),
+        ]);
+        let found = |path: &'static str| {
+            let site = &site;
+            async move {
+                let (status, to) = site.get_sent_on(path).await;
+                (status, to)
+            }
+        };
+        assert_eq!(
+            found("/design/2").await,
+            (
+                StatusCode::TEMPORARY_REDIRECT,
+                "/docs/designs/tiling.html".into()
+            )
+        );
+        assert_eq!(
+            found("/guide/2").await,
+            (StatusCode::TEMPORARY_REDIRECT, "/docs/guide.html".into())
+        );
+        assert_eq!(
+            found("/design").await,
+            (StatusCode::TEMPORARY_REDIRECT, "/_doctypes/design".into())
+        );
+        assert_eq!(found("/design/9").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(
+            found("/memo/1").await.0,
+            StatusCode::NOT_FOUND,
+            "no such doctype"
         );
     }
 

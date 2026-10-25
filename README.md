@@ -129,6 +129,8 @@ Pointed at, a field says which commit last set it. git-kb adds two kinds of its 
 
 The server checks each page against its schema, formats and patterns too. It shows what is wrong under the page's title, in its doctype's list, and on `/_problems`. Each doctype has a page listing its pages, with a choice of which values of each `enum` to show. The site's contents link to each.
 
+Served, a page is found by its doctype and number: `/design/12` sends you on to Design-12, wherever it is, and `/design` to the list of designs.
+
 `git kb new design "Cache tiling" --in docs/designs` writes `docs/designs/cache-tiling.md` from the template. It fills in `{title}`, `{number}` (the doctype's next), `{date}` and `{author}` (from git), and commits nothing.
 
 ## Plugins
