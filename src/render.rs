@@ -9,12 +9,14 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 use pulldown_cmark::{
-    CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd, html,
+    CodeBlockKind, CowStr, Event, HeadingLevel, MetadataBlockKind, Options, Parser, Tag, TagEnd,
+    html,
 };
 use syntect::html::{ClassStyle, ClassedHTMLGenerator, line_tokens_to_classed_spans};
 use syntect::parsing::{ParseState, ScopeStack, ScopeStackOp, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
+use crate::front::Front;
 use crate::plugins::{self, Plugins};
 
 /// The syntaxes highlighter is loaded once and shared by every renderer.
@@ -225,7 +227,8 @@ impl Renderer {
             | Options::ENABLE_FOOTNOTES
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
-            | Options::ENABLE_HEADING_ATTRIBUTES;
+            | Options::ENABLE_HEADING_ATTRIBUTES
+            | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
         if plugins.math().is_some() {
             options |= Options::ENABLE_MATH;
         }
@@ -236,6 +239,48 @@ impl Renderer {
     #[must_use]
     pub fn options(&self) -> Options {
         self.options
+    }
+
+    /// A page's events, as the parser gives them with where each is in its text, but for its front matter, which
+    /// is none of its text: not rendered, nor a block, nor searched. See `front`.
+    fn events_at<'a>(&self, markdown: &'a str) -> impl Iterator<Item = (Event<'a>, Range<usize>)> {
+        let mut front = false;
+        Parser::new_ext(markdown, self.options)
+            .into_offset_iter()
+            .filter(move |(event, _)| match event {
+                Event::Start(Tag::MetadataBlock(_)) => {
+                    front = true;
+                    false
+                }
+                Event::End(TagEnd::MetadataBlock(_)) => {
+                    front = false;
+                    false
+                }
+                _ => !front,
+            })
+    }
+
+    /// The same, without where each is.
+    fn events<'a>(&self, markdown: &'a str) -> impl Iterator<Item = Event<'a>> {
+        self.events_at(markdown).map(|(event, _)| event)
+    }
+
+    /// A page's front matter, if it begins with some.
+    #[must_use]
+    pub fn front(&self, markdown: &str) -> Option<Front> {
+        let mut events = Parser::new_ext(markdown, self.options);
+        let Some(Event::Start(Tag::MetadataBlock(MetadataBlockKind::YamlStyle))) = events.next()
+        else {
+            return None;
+        };
+        let yaml: String = events
+            .take_while(|e| !matches!(e, Event::End(TagEnd::MetadataBlock(_))))
+            .filter_map(|e| match e {
+                Event::Text(text) => Some(text.into_string()),
+                _ => None,
+            })
+            .collect();
+        Some(Front::parse(&yaml))
     }
 
     /// Renders Markdown as HTML.
@@ -250,7 +295,7 @@ impl Renderer {
     pub fn block_ranges(&self, markdown: &str) -> Vec<Range<usize>> {
         let mut depth = 0usize;
         let mut out = vec![];
-        for (event, range) in Parser::new_ext(markdown, self.options).into_offset_iter() {
+        for (event, range) in self.events_at(markdown) {
             match event {
                 Event::Start(_) => {
                     if depth == 0 {
@@ -318,7 +363,7 @@ impl Renderer {
     #[must_use]
     pub fn link_sites(&self, markdown: &str) -> Vec<(String, Option<(String, String)>)> {
         let (mut out, mut ids, mut under) = (vec![], Ids::default(), None);
-        let mut events = Parser::new_ext(markdown, self.options);
+        let mut events = self.events(markdown);
         while let Some(event) = events.next() {
             match event {
                 Event::Start(Tag::Heading { level, id, .. }) => {
@@ -350,7 +395,7 @@ impl Renderer {
             text: String::new(),
         }];
         let mut ids = Ids::default();
-        let mut events = Parser::new_ext(markdown, self.options);
+        let mut events = self.events(markdown);
         while let Some(event) = events.next() {
             match event {
                 Event::Start(Tag::Heading { level, id, .. }) => {
@@ -395,7 +440,7 @@ impl Renderer {
     /// A page's title, as `render` gives it, without rendering the rest: the text of its first top-level heading.
     #[must_use]
     pub fn title(&self, markdown: &str) -> Option<String> {
-        let mut events = Parser::new_ext(markdown, self.options);
+        let mut events = self.events(markdown);
         while let Some(event) = events.next() {
             if let Event::Start(Tag::Heading {
                 level: HeadingLevel::H1,
@@ -417,7 +462,7 @@ impl Renderer {
     #[must_use]
     pub fn summary(&self, markdown: &str) -> Option<String> {
         const SUMMARY: usize = 160;
-        let mut events = Parser::new_ext(markdown, self.options);
+        let mut events = self.events(markdown);
         let mut depth = 0usize;
         while let Some(event) = events.next() {
             match event {
@@ -542,7 +587,7 @@ impl Renderer {
         let mut ids = Ids::default();
         let mut headings = vec![];
         let mut out = vec![];
-        let mut events = Parser::new_ext(markdown, self.options);
+        let mut events = self.events(markdown);
         while let Some(event) = events.next() {
             // The title is the page's first block, when that is a top-level heading.
             let title = depth == 0 && block == 0 && Self::top_heading(&event);
@@ -1589,5 +1634,34 @@ mod tests {
             "{summary}"
         );
         assert_eq!(r.summary("# Only a title\n"), None);
+    }
+
+    #[test]
+    fn front_matter_is_read_and_is_none_of_the_page_s_text() {
+        let r = Renderer::new();
+        let page = "---\ndoctype: design\nnumber: 3\n---\n# Tiling\n\nWhy.\n";
+        let front = r.front(page).unwrap();
+        assert_eq!((front.doctype(), front.number()), (Some("design"), Some(3)));
+        let rendered = r.render(page);
+        assert!(
+            !rendered.html.contains("<hr") && !rendered.html.contains("doctype"),
+            "{}",
+            rendered.html
+        );
+        assert_eq!(rendered.title.as_deref(), Some("Tiling"));
+        assert_eq!(
+            &rendered.html[..rendered.title_end],
+            "<h1 id=\"tiling\">Tiling</h1>\n",
+            "the title is still the page's first block"
+        );
+        assert_eq!(r.title(page).as_deref(), Some("Tiling"));
+        assert_eq!(r.summary(page).as_deref(), Some("Why."));
+        assert_eq!(r.blocks(page), ["# Tiling", "Why."]);
+        assert_eq!(r.front("# No front matter\n"), None);
+        assert_eq!(
+            r.front("# T\n\n---\nnot: front\n---\n"),
+            None,
+            "only at the very top"
+        );
     }
 }

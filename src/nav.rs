@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::build::Builder;
+use crate::front::Front;
 use crate::graph::Graph;
 use crate::render::{Heading, Renderer};
 
@@ -14,6 +15,8 @@ pub struct Pages {
     titles: BTreeMap<PathBuf, String>,
     /// What each page is about, for a card of it, if it says, by `Renderer::summary`.
     summaries: BTreeMap<PathBuf, String>,
+    /// Each page's front matter, if it has some.
+    fronts: BTreeMap<PathBuf, Front>,
 }
 
 /// What a page's sidebar shows: the site's pages, which one is shown, and the page's headings.
@@ -34,6 +37,7 @@ impl Nav<'_> {
         static NONE: Pages = Pages {
             titles: BTreeMap::new(),
             summaries: BTreeMap::new(),
+            fronts: BTreeMap::new(),
         };
         Nav {
             pages: &NONE,
@@ -71,6 +75,9 @@ impl Pages {
             pages.titles.insert(f.clone(), title);
             if let Some(summary) = text.as_deref().and_then(|text| renderer.summary(text)) {
                 pages.summaries.insert(f.clone(), summary);
+            }
+            if let Some(front) = text.as_deref().and_then(|text| renderer.front(text)) {
+                pages.fronts.insert(f.clone(), front);
             }
         }
         pages
@@ -113,6 +120,12 @@ impl Pages {
                 title.to_lowercase() == wanted || path.to_string_lossy().to_lowercase() == wanted
             })
             .map(|(path, _)| path.as_path())
+    }
+
+    /// A page's front matter, if it has some.
+    #[must_use]
+    pub fn front(&self, page: &Path) -> Option<&Front> {
+        self.fronts.get(page)
     }
 
     /// What a page is about, if it says.
@@ -174,6 +187,7 @@ mod tests {
                 .map(|(path, title)| (PathBuf::from(path), (*title).to_string()))
                 .collect(),
             summaries: BTreeMap::new(),
+            fronts: BTreeMap::new(),
         }
     }
 
