@@ -146,10 +146,21 @@ impl Shell {
         }
     }
 
-    /// The marker beside the block at a range of the page's text: a link to its first thread, with how many are
-    /// open, or a tick when all are resolved; and, where comments are written, a + to begin one on it.
+    /// The markers beside the block at a range of the page's text, in a strip of the block at its right, as tall
+    /// as it is, so that the pointer stays on the block on its way to them: a link to its first thread, with how
+    /// many are open, or a tick when all are resolved; and, where comments are written, a + to begin one on it.
     #[must_use]
     pub fn comment_mark(&self, notes: &Notes, range: &Range<usize>) -> String {
+        let markers = self.markers(notes, range);
+        if markers.is_empty() {
+            markers
+        } else {
+            format!("<span class=\"cmts\">{markers}</span>")
+        }
+    }
+
+    /// The same markers, on their own.
+    fn markers(&self, notes: &Notes, range: &Range<usize>) -> String {
         let lines = notes.lines(range);
         let add = if self.writes() {
             format!(
@@ -519,11 +530,11 @@ mod tests {
         };
         assert_eq!(
             at("One."),
-            r##"<a class="cmt" href="#t-t1" title="2 open threads">💬 2</a>"##
+            r##"<span class="cmts"><a class="cmt" href="#t-t1" title="2 open threads">💬 2</a></span>"##
         );
         assert_eq!(
             at("Two."),
-            r##"<a class="cmt done" href="#t-t3" title="Resolved comments">✓</a>"##
+            r##"<span class="cmts"><a class="cmt done" href="#t-t3" title="Resolved comments">✓</a></span>"##
         );
         assert_eq!(at("# A"), "");
     }
@@ -601,7 +612,7 @@ mod tests {
         let start = TEXT.find("Two.").unwrap();
         assert_eq!(
             shell().comment_mark(&notes, &(start..start + 5)),
-            r#"<a class="cmt add" href="?comment=4-5#composer" title="Comment on this paragraph">+</a>"#
+            r#"<span class="cmts"><a class="cmt add" href="?comment=4-5#composer" title="Comment on this paragraph">+</a></span>"#
         );
         let built = Shell::new("Site".into(), Links::Built);
         assert_eq!(built.comment_mark(&notes, &(start..start + 5)), "");

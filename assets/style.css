@@ -448,18 +448,17 @@ a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashe
 .thread.resolved, .rail-lost.resolved { display: none; }
 html:has(#show-resolved:checked) .thread.resolved, html:has(#show-resolved:checked) .rail-lost.resolved { display: block; }
 html:has(#show-resolved:checked) .cmt.done { display: inline-block; }
-.cmt { position: absolute; top: 0; left: 100%; margin-left: 10px; padding: 0 6px; border: 1px solid var(--line);
-       border-radius: 11px; background: var(--subtle); color: var(--text); font-size: 12px; line-height: 20px;
-       white-space: nowrap; }
+.cmts { position: absolute; top: 0; bottom: 0; left: 100%; display: flex; align-items: flex-start; gap: 6px;
+        padding-left: 10px; }
+.cmt { padding: 0 6px; border: 1px solid var(--line); border-radius: 11px; background: var(--subtle);
+       color: var(--text); font-size: 12px; line-height: 20px; white-space: nowrap; }
 .cmt:hover { border-color: var(--accent); text-decoration: none; }
 .cmt.done { display: none; background: none; color: var(--muted); }
-@media (max-width: 1100px) { .cmt { top: -20px; right: 0; left: auto; } }
+@media (max-width: 1100px) { .cmts { top: -20px; bottom: auto; right: 0; left: auto; } }
 /* Writing comments, on the folder as it is, served: the + beside a block, shown as it is hovered, which opens the
    box to begin a thread in; and each thread's box to reply in, and its button to resolve or reopen it. */
 .cmt.add { opacity: 0; background: var(--page); color: var(--muted); transition: opacity 0.15s; }
-.cmt + .cmt.add { left: calc(100% + 52px); }
-.blk:hover > .cmt.add, .cmt.add:focus-visible { opacity: 1; }
-@media (max-width: 1100px) { .cmt + .cmt.add { right: 44px; left: auto; } }
+.blk:hover > .cmts > .cmt.add, .cmt.add:focus-visible { opacity: 1; }
 .rail form { margin: 8px 0 0; }
 .rail textarea { box-sizing: border-box; width: 100%; padding: 6px 8px; border: 1px solid var(--line);
                  border-radius: 6px; background: var(--page); color: var(--text); font: inherit; resize: vertical; }
