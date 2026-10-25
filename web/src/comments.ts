@@ -121,9 +121,9 @@ function wordsOf(card: HTMLElement): DOMRect | undefined {
 // Where a card is on the screen: its words, or else its paragraph.
 const spotOf = (card: HTMLElement) => wordsOf(card) ?? blockAt(Number(card.dataset.line))?.getBoundingClientRect();
 
-// Choosing words in the text offers to comment on them: a button beside them opens the box to begin a thread on
+// Choosing words in the text offers to comment on them: a +, as beside a paragraph, beside them opens the box to begin a thread on
 // them, with the words before and after them, to tell them from the same words elsewhere.
-const offer = Object.assign(document.createElement('a'), { className: 'cmt offer', textContent: 'Comment', hidden: true });
+const offer = Object.assign(document.createElement('a'), { className: 'cmt offer', textContent: '+', title: 'Comment on these words', hidden: true });
 document.body.append(offer);
 // Pressing it would let go of the words before it is clicked.
 offer.addEventListener('pointerdown', (e) => e.preventDefault());
