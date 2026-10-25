@@ -423,6 +423,12 @@ a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashe
   .rail-placed .rail-cards > * { position: static; }
   .rail-placed .rail-cards > * + * { margin-top: 10px; }
 }
+/* A card hovered, and what it is on, lit, with a line from one to the other, as web/src/comments.ts draws it. */
+.thread.lit { border-color: var(--accent); }
+.blk.cmt-lit::before { background: var(--accent); }
+.cmt-lines { position: fixed; inset: 0; z-index: 4; width: 100vw; height: 100vh; overflow: visible; pointer-events: none; }
+.cmt-lines path { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: 0.75; }
+.cmt-lines circle { fill: var(--accent); }
 .rail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .rail-head h2, .rail-lost { margin: 0; padding: 0; border: 0; color: var(--muted); font-size: 12px; font-weight: 600;
                             text-transform: uppercase; letter-spacing: 0.04em; }

@@ -1,7 +1,8 @@
 // The column of comments beside a served page: each card level with what it is on, pushed down as far as the card
 // above it needs. The page and the column scroll each on their own, and keep in step: whichever the reader scrolls
-// leads, and the other glides after it, so that a card stays level with its text. Without this script the cards
-// simply follow one another, and the column scrolls alone.
+// leads, and the other glides after it, so that a card stays level with its text. Hovering a card lights what it is
+// on, with a line to it, and the other way round. Without this script the cards simply follow one another, and the
+// column scrolls alone.
 import { $, $$ } from './dom';
 
 const root = document.documentElement;
@@ -80,6 +81,7 @@ function follow(): void {
     const d = goal.page - scrollY;
     if (Math.abs(d) < 0.5) { scrollTo(0, goal.page); goal.page = null; } else { scrollTo(0, scrollY + d * 0.16); more = true; }
   }
+  connect();
   ticking = more;
   if (more) requestAnimationFrame(follow);
 }
@@ -106,6 +108,39 @@ document.addEventListener('scroll', (e) => {
   if (box && e.target === box && leader === 'column') { goal.page = pageAt(across(columnLine(box), 'col', 'page')); glide(); }
 }, { capture: true, passive: true });
 
+// A card and what it is on, lit together while either is hovered, with a line from the card to its text, drawn over
+// the page and kept up as either scrolls: from the card's left edge to its block's right, at the height nearest the
+// card that is on the screen, so that a tall block's line does not run off to its top.
+const SVG = 'http://www.w3.org/2000/svg';
+const lines = document.createElementNS(SVG, 'svg');
+lines.classList.add('cmt-lines');
+document.body.append(lines);
+const linked = new Set<HTMLElement>();
+function connect(): void {
+  lines.replaceChildren();
+  for (const card of linked) {
+    const to = blockAt(Number(card.dataset.line))?.getBoundingClientRect();
+    if (!to || !card.isConnected || !shown(card)) continue;
+    const from = card.getBoundingClientRect();
+    const [x1, y1] = [from.left, from.top + 14];
+    const [x2, y2] = [to.right + 6, Math.min(Math.max(y1, to.top + 12, 64), to.bottom - 12, innerHeight - 12)];
+    const bend = Math.max(40, (x1 - x2) / 2);
+    const path = document.createElementNS(SVG, 'path');
+    path.setAttribute('d', `M${x1},${y1} C${x1 - bend},${y1} ${x2 + bend},${y2} ${x2},${y2}`);
+    const dot = document.createElementNS(SVG, 'circle');
+    Object.entries({ cx: x2, cy: y2, r: 3 }).forEach(([k, v]) => dot.setAttribute(k, String(v)));
+    lines.append(path, dot);
+  }
+}
+function lit(card: HTMLElement, on: boolean): void {
+  card.classList.toggle('lit', on);
+  blockAt(Number(card.dataset.line))?.classList.toggle('cmt-lit', on);
+  if (on) linked.add(card); else linked.delete(card);
+  connect();
+}
+addEventListener('scroll', connect, { passive: true });
+document.addEventListener('scroll', connect, { capture: true, passive: true });
+
 // Cards placed again whenever any grows or shrinks, as a reply box opens or a thread folds, and when the page does.
 let pending = false;
 const again = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; place(); }); } };
@@ -116,6 +151,19 @@ function hook(): void {
   const page = $('main.page');
   if (page) sizes.observe(page);
   for (const card of all()) sizes.observe(card);
+  linked.clear();
+  connect();
+  for (const card of all()) {
+    card.addEventListener('mouseenter', () => lit(card, true));
+    card.addEventListener('mouseleave', () => lit(card, false));
+  }
+  for (const blk of $$('.blk[data-lines]')) {
+    const [a, z] = linesOf(blk);
+    const mine = all().filter((c) => { const line = Number(c.dataset.line); return a <= line && line < z; });
+    if (!mine.length) continue;
+    blk.addEventListener('mouseenter', () => mine.forEach((c) => lit(c, true)));
+    blk.addEventListener('mouseleave', () => mine.forEach((c) => lit(c, false)));
+  }
   $('#show-resolved')?.addEventListener('change', again);
   place();
 }
