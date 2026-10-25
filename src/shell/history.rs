@@ -27,6 +27,8 @@ pub enum PageState {
 pub struct PageHistory<'a> {
     pub state: PageState,
     pub changes: Vec<&'a Change>,
+    /// The commit that last changed its status, in its front matter; none if it has none, or it is not committed.
+    pub status: Option<Change>,
 }
 
 impl<'a> PageHistory<'a> {
@@ -47,7 +49,14 @@ impl<'a> PageHistory<'a> {
         Self {
             state,
             changes: history.iter().flat_map(|h| h.of(page)).collect(),
+            status: None,
         }
+    }
+
+    /// The same, with the commit that last changed its status.
+    #[must_use]
+    pub fn with_status(self, status: Option<Change>) -> Self {
+        Self { status, ..self }
     }
 }
 
@@ -62,10 +71,36 @@ impl Shell {
         history: &PageHistory,
         pages: &Pages,
     ) -> String {
-        let head = self.doc_head(at, page, pages);
+        let head = self.doc_head(at, page, pages, history.status.as_ref());
         let meta = self.meta(at, page, history);
         let (title, rest) = rendered.html.split_at(rendered.title_end);
         format!("{title}{head}{meta}{rest}")
+    }
+
+    /// When a commit was made, as a served site says it, how long ago, or a built one, by the day, as it is read
+    /// long after it is built; and the commit, linked to the page as it was then where the site has that.
+    pub(super) fn when_and_commit(&self, page: &Path, change: &Change) -> (String, String) {
+        let commit = match self.at_commit(&change.short, page) {
+            Some(link) => format!(
+                "<a href=\"{link}\" title=\"{}\">{}</a>",
+                Self::escape(&change.summary),
+                change.short
+            ),
+            None => format!(
+                "<code title=\"{}\">{}</code>",
+                Self::escape(&change.summary),
+                change.short
+            ),
+        };
+        let when = match self.links {
+            Links::Served => format!(
+                "<span title=\"{}\">{}</span>",
+                change.date(),
+                change.ago(When::now().0)
+            ),
+            Links::Built => format!("on {}", change.date()),
+        };
+        (when, commit)
     }
 
     /// When a page last changed, and by whom, in what commit; whether it has changed since; and, served, a
@@ -84,27 +119,7 @@ impl Shell {
             PageState::Committed => {}
         }
         if let Some(last) = history.changes.first() {
-            let commit = match self.at_commit(&last.short, page) {
-                Some(link) => format!(
-                    "<a href=\"{link}\" title=\"{}\">{}</a>",
-                    Self::escape(&last.summary),
-                    last.short
-                ),
-                None => format!(
-                    "<code title=\"{}\">{}</code>",
-                    Self::escape(&last.summary),
-                    last.short
-                ),
-            };
-            // A built site is read long after it is built: when, by the day.
-            let when = match self.links {
-                Links::Served => format!(
-                    "<span title=\"{}\">{}</span>",
-                    last.date(),
-                    last.ago(When::now().0)
-                ),
-                Links::Built => format!("on {}", last.date()),
-            };
+            let (when, commit) = self.when_and_commit(page, last);
             parts.push(format!(
                 "Last changed {when} by {} in {commit} (<a href=\"{}\">changes</a>)",
                 Self::escape(&last.author),

@@ -7,13 +7,20 @@ use std::path::Path;
 
 use super::{Links, Shell};
 use crate::front::{Front, Value};
+use crate::git::Change;
 use crate::nav::Pages;
 
 impl Shell {
     /// The lines under a page's title that say what it is, and what replaces it, if a page says it does; none for a
     /// page without front matter that nothing replaces.
     #[must_use]
-    pub fn doc_head(&self, at: &Path, page: &Path, pages: &Pages) -> String {
+    pub fn doc_head(
+        &self,
+        at: &Path,
+        page: &Path,
+        pages: &Pages,
+        since: Option<&Change>,
+    ) -> String {
         let replaced = pages.replacing(page);
         let banner = if replaced.is_empty() {
             String::new()
@@ -33,11 +40,19 @@ impl Shell {
                 by.join(", ")
             )
         };
-        banner + &self.what_it_is(at, pages.front(page), pages)
+        banner + &self.what_it_is(at, page, pages.front(page), pages, since)
     }
 
-    /// The line under a page's title that says what it is, from its front matter.
-    fn what_it_is(&self, at: &Path, front: Option<&Front>, pages: &Pages) -> String {
+    /// The line under a page's title that says what it is, from its front matter; and, given the commit that last
+    /// changed its status, since when, by whom.
+    fn what_it_is(
+        &self,
+        at: &Path,
+        page: &Path,
+        front: Option<&Front>,
+        pages: &Pages,
+        since: Option<&Change>,
+    ) -> String {
         let Some(front) = front else {
             return String::new();
         };
@@ -80,6 +95,13 @@ impl Shell {
                 },
                 Self::escape(status)
             ));
+            if let Some(change) = since {
+                let (when, commit) = self.when_and_commit(page, change);
+                parts.push(format!(
+                    "<span class=\"since\">since {when}, by {} in {commit}</span>",
+                    Self::escape(&change.author)
+                ));
+            }
         }
         // The doctype's fields, in its order; or, of a page of no doctype git-kb.toml has, all of them.
         let fields: Vec<&str> = match doctype {
@@ -378,7 +400,13 @@ mod tests {
         let front = Front::parse(
             "doctype: design\nnumber: 12\nstatus: review\nauthors: [Ada, Grace]\nreplaces: designs/old.md\nhidden: x\n",
         );
-        let head = shell().what_it_is(Path::new("designs"), Some(&front), &pages());
+        let head = shell().what_it_is(
+            Path::new("designs"),
+            Path::new("designs/x.md"),
+            Some(&front),
+            &pages(),
+            None,
+        );
         assert_eq!(
             head,
             concat!(
@@ -393,10 +421,16 @@ mod tests {
     #[test]
     fn what_its_doctype_does_not_know_is_said_and_an_unread_front_matter_too() {
         let odd = Front::parse("doctype: design\nstatus: shipped\n");
-        let head = shell().what_it_is(Path::new(""), Some(&odd), &pages());
+        let head = shell().what_it_is(Path::new(""), Path::new("x.md"), Some(&odd), &pages(), None);
         assert!(head.contains("status status-shipped unknown"), "{head}");
         let none = Front::parse("doctype: memo\nowner: Ada\n");
-        let head = shell().what_it_is(Path::new(""), Some(&none), &pages());
+        let head = shell().what_it_is(
+            Path::new(""),
+            Path::new("x.md"),
+            Some(&none),
+            &pages(),
+            None,
+        );
         assert!(
             head.contains("title=\"No such doctype in git-kb.toml\">memo</a>")
                 && head.contains("Owner</span> Ada"),
@@ -405,10 +439,19 @@ mod tests {
         let broken = Front::parse("status: [unclosed\n");
         assert!(
             shell()
-                .what_it_is(Path::new(""), Some(&broken), &pages())
+                .what_it_is(
+                    Path::new(""),
+                    Path::new("x.md"),
+                    Some(&broken),
+                    &pages(),
+                    None
+                )
                 .contains("could not be read")
         );
-        assert_eq!(shell().what_it_is(Path::new(""), None, &pages()), "");
+        assert_eq!(
+            shell().what_it_is(Path::new(""), Path::new("x.md"), None, &pages(), None),
+            ""
+        );
     }
 
     #[test]
@@ -466,7 +509,7 @@ mod tests {
                 "# Old tiling\n".into()
             })
         });
-        let head = shell().doc_head(Path::new(""), Path::new("old.md"), &pages);
+        let head = shell().doc_head(Path::new(""), Path::new("old.md"), &pages, None);
         assert_eq!(
             head,
             "<p class=\"replaced-by\">Replaced by <a href=\"./new.html\">New tiling</a></p>\n",
@@ -474,7 +517,7 @@ mod tests {
         );
         assert!(
             !shell()
-                .doc_head(Path::new(""), Path::new("new.md"), &pages)
+                .doc_head(Path::new(""), Path::new("new.md"), &pages, None)
                 .contains("replaced-by")
         );
     }

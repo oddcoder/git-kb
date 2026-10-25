@@ -26,6 +26,7 @@ use tracing::{debug, warn};
 use crate::comments::Store;
 use crate::config::{CommentsConfig, DoctypeConfig, LookConfig};
 use crate::diff::Diff;
+use crate::front::Front;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
 use crate::nav::{Nav, Pages};
@@ -283,7 +284,8 @@ impl Builder {
                     past.map(|p| &*p.history),
                     path,
                     &bytes,
-                );
+                )
+                .with_status(past.and_then(|p| Self::status_change(p, path, &text)));
                 let within = Within {
                     shell,
                     files,
@@ -630,6 +632,13 @@ impl Builder {
                 .insert(name);
             below = above;
         }
+    }
+
+    /// The commit that last changed a page's status, in its front matter, if it has one, committed.
+    fn status_change(past: &Past, path: &Path, text: &str) -> Option<crate::git::Change> {
+        let line = Front::line_of(text, "status")?;
+        let now = past.head.is_some().then_some(text.as_bytes());
+        past.repo.line_change(&past.at, path, now, line)
     }
 
     /// A site's pages of its own: the graph of every page and link, and each doctype's list of pages.

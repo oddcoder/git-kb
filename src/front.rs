@@ -98,6 +98,22 @@ impl Front {
         self.text("number")?.parse().ok()
     }
 
+    /// The line, from 0, of a page's text that gives a field of its front matter, as `status: review`.
+    #[must_use]
+    pub fn line_of(markdown: &str, field: &str) -> Option<usize> {
+        let mut lines = markdown.lines().enumerate();
+        if lines.next()?.1.trim_end() != "---" {
+            return None;
+        }
+        lines
+            .take_while(|(_, line)| !matches!(line.trim_end(), "---" | "..."))
+            .find(|(_, line)| {
+                line.strip_prefix(field)
+                    .is_some_and(|rest| rest.trim_start().starts_with(':'))
+            })
+            .map(|(i, _)| i)
+    }
+
     /// A scalar as text: a string as it is, a number or a truth as written; nothing for null.
     fn scalar(yaml: &Yaml) -> Option<String> {
         match yaml {
@@ -132,6 +148,14 @@ mod tests {
         assert_eq!(front.text("draft"), Some("true"));
         let names: Vec<&str> = front.fields.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(names, ["doctype", "number", "authors", "sources", "draft"]);
+    }
+
+    #[test]
+    fn a_field_s_line_is_found_in_the_front_matter_only() {
+        let page = "---\ndoctype: design\nstatus: review\n---\nstatus: not this\n";
+        assert_eq!(Front::line_of(page, "status"), Some(2));
+        assert_eq!(Front::line_of(page, "authors"), None);
+        assert_eq!(Front::line_of("# T\nstatus: x\n", "status"), None);
     }
 
     #[test]

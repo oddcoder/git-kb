@@ -256,6 +256,18 @@ impl Repo {
         Ok(snapshots)
     }
 
+    /// The commit that last changed a line of a page, from 0, as `blame` says; none for one not committed yet.
+    #[must_use]
+    pub fn line_change(
+        &self,
+        snapshot: &Snapshot,
+        page: &Path,
+        now: Option<&[u8]>,
+        line: usize,
+    ) -> Option<Change> {
+        self.blame(snapshot, page, now).ok()?.get(line)?.clone()
+    }
+
     /// Who last changed each line of a page at a snapshot's commit; given `now`, the page's text on disk, of
     /// that text instead, its lines not at the commit not committed yet.
     ///

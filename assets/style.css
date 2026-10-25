@@ -123,6 +123,8 @@ ul.results { padding-left: 0; list-style: none; }
 :is(.doc-head, .doc-list) .status.status-planned { background: color-mix(in srgb, var(--accent) 22%, transparent); }
 .doc-head .unknown, .doc-head .doctype[title] { border: 1px dashed var(--muted); }
 .doc-head .label { color: var(--muted); }
+.doc-head .since { margin-left: -8px; color: var(--muted); }
+.doc-head .since a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); }
 .doc-head.unread { color: light-dark(#a8432f, #d9826f); cursor: help; }
 .replaced-by { margin: -4px 0 8px; padding: 6px 12px; border-left: 3px solid light-dark(#cf222e, #f85149);
                border-radius: 4px; background: color-mix(in srgb, #cf222e 10%, transparent); font-size: 14px; }

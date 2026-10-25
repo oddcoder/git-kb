@@ -45,6 +45,7 @@ use crate::build::Builder;
 use crate::comments::{Begin, Snippet, Store};
 use crate::config::{CommentsConfig, DoctypeConfig, LookConfig};
 use crate::diff::Diff;
+use crate::front::Front;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
 use crate::live::{Change, Live};
@@ -862,9 +863,15 @@ impl View<'_> {
             headings: &page.headings,
             graph: Some(&graph),
         };
-        let body = self
-            .shell
-            .noted(at, file, &page, &self.page_history(file, &bytes), &pages);
+        let body = self.shell.noted(
+            at,
+            file,
+            &page,
+            &self
+                .page_history(file, &bytes)
+                .with_status(self.status_change(file, &text, &bytes)),
+            &pages,
+        );
         let body = Shell::with_source(&body, &self.server.renderer.source(&text));
         let rail = notes
             .map(|notes| self.shell.rail(&notes))
@@ -1060,6 +1067,14 @@ impl View<'_> {
     }
 
     /// Where a page, of these bytes, stands against the last commit, and the commits that changed it.
+    /// The commit that last changed a page's status, in its front matter, if it has one, committed.
+    fn status_change(&self, file: &Path, text: &str, bytes: &[u8]) -> Option<crate::git::Change> {
+        let line = Front::line_of(text, "status")?;
+        let repo = self.server.repo.as_ref()?;
+        let at = self.snapshot.as_ref().or(self.head.as_ref())?;
+        repo.line_change(at, file, self.snapshot.is_none().then_some(bytes), line)
+    }
+
     fn page_history(&self, file: &Path, bytes: &[u8]) -> PageHistory<'_> {
         PageHistory::of(self.head.as_deref(), self.history.as_deref(), file, bytes)
     }
@@ -2156,6 +2171,32 @@ mod tests {
         git.commit("More pages");
         let body = Site::of(git.top().join("docs")).get("/docs/a.html").await.2;
         assert!(body.contains(r#"See <a href="/docs/b.html">B</a>, <a href="/docs/arch/c.html">arch/c.md</a> and <a class="broken" href="kb:Nope" title="No such page: kb:Nope">Nope</a>."#), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_page_s_status_says_since_when_by_the_commit_that_set_it() {
+        let git = crate::git::tests::Git::new();
+        git.write(
+            "docs/d.md",
+            "---\ndoctype: design\nstatus: draft\n---\n# D\n\nBody.\n",
+        );
+        git.commit("Draft a design");
+        git.write(
+            "docs/d.md",
+            "---\ndoctype: design\nstatus: review\n---\n# D\n\nBody.\n",
+        );
+        git.commit("Put it up for review");
+        git.write(
+            "docs/d.md",
+            "---\ndoctype: design\nstatus: review\n---\n# D\n\nBody, edited.\n",
+        );
+        git.commit("Edit the body");
+        let page = Site::of(git.top().join("docs")).get("/docs/d.html").await.2;
+        let since = &page[page.find("class=\"since\"").expect("a since")..];
+        assert!(
+            since.contains("title=\"Put it up for review\""),
+            "the commit that set the status, not the last one: {since}"
+        );
     }
 
     #[tokio::test]
