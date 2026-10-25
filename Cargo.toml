@@ -3,8 +3,29 @@ name = "git-kb"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "A knowledge base of Markdown in git"
+description = "A knowledge base of Markdown in git: served or built as a site, reviewed in place, its comments kept in git"
 repository = "https://github.com/oddcoder/git-kb"
+readme = "README.md"
+keywords = ["git", "markdown", "documentation", "knowledge-base", "review"]
+categories = ["command-line-utilities", "development-tools"]
+# What a package of it holds: the code, its browser code compiled, in web/dist/, so that installing it needs no
+# Node, and what the binary takes in.
+include = [
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/LICENSE",
+    "/README.md",
+    "/build.rs",
+    "/src/**",
+    "/assets/**",
+    "/plugins/**",
+    "/web/build.mjs",
+    "/web/package.json",
+    "/web/package-lock.json",
+    "/web/tsconfig.json",
+    "/web/src/**",
+    "/web/dist/**",
+]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

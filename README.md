@@ -207,3 +207,14 @@ CI runs these, plus `cargo deny`. The browser code is TypeScript in `web/src`. `
 ## License
 
 Apache-2.0; see [LICENSE](LICENSE).
+
+## Publishing
+
+A package of git-kb has its browser code compiled, so that `cargo install git-kb` needs no Node:
+
+```sh
+node web/build.mjs web/dist   # the compiled scripts, which build.rs then copies rather than compiles
+cargo publish --allow-dirty  # web/dist/ is not in git, so cargo counts it as a change
+rm -r web/dist                # a checkout compiles them itself
+```
+
