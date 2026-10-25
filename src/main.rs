@@ -69,6 +69,7 @@ fn main() -> ExitCode {
                     runtime.block_on(
                         Server::new(config.root.clone(), config.title.clone())
                             .looking(config.look.clone())
+                            .typing(config.doctypes.clone())
                             .commenting(&config.comments)
                             .syncing(config.serve.sync_every)
                             .run(address, async {
@@ -89,6 +90,7 @@ fn main() -> ExitCode {
             let out = &config.build.out;
             let builder = Builder::new(config.title.clone(), config.url.clone())
                 .looking(config.look.clone())
+                .typing(config.doctypes.clone())
                 .commenting(config.comments.clone());
             match builder.build(&config.root, out) {
                 Ok(built) => {

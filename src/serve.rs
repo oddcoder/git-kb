@@ -17,6 +17,7 @@
 //! pages' style sheet and scripts under `/_assets/`, and `/_events`. Open pages load again when the site changes:
 //! the server tells them, as events from `/_events`, and a line of script in each page, the shell's, reloads it.
 
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -42,7 +43,7 @@ mod agents;
 
 use crate::build::Builder;
 use crate::comments::{Begin, Snippet, Store};
-use crate::config::{CommentsConfig, LookConfig};
+use crate::config::{CommentsConfig, DoctypeConfig, LookConfig};
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
@@ -124,6 +125,15 @@ impl Server {
     pub fn looking(self, look: LookConfig) -> Self {
         Self {
             shell: self.shell.looking(look),
+            ..self
+        }
+    }
+
+    /// The same, with these doctypes for its pages.
+    #[must_use]
+    pub fn typing(self, doctypes: BTreeMap<String, DoctypeConfig>) -> Self {
+        Self {
+            shell: self.shell.typing(doctypes),
             ..self
         }
     }
@@ -832,7 +842,7 @@ impl View<'_> {
         };
         let body = self
             .shell
-            .noted(at, file, &page, &self.page_history(file, &bytes));
+            .noted(at, file, &page, &self.page_history(file, &bytes), &pages);
         let body = Shell::with_source(&body, &self.server.renderer.source(&text));
         let rail = notes
             .map(|notes| self.shell.rail(&notes))

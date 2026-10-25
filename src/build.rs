@@ -24,7 +24,7 @@ use ignore::WalkBuilder;
 use tracing::{debug, warn};
 
 use crate::comments::Store;
-use crate::config::{CommentsConfig, LookConfig};
+use crate::config::{CommentsConfig, DoctypeConfig, LookConfig};
 use crate::diff::Diff;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
@@ -99,6 +99,8 @@ pub struct Builder {
     url: Option<String>,
     look: LookConfig,
     comments: CommentsConfig,
+    /// The doctypes its pages may be.
+    doctypes: BTreeMap<String, DoctypeConfig>,
 }
 
 impl Builder {
@@ -118,6 +120,7 @@ impl Builder {
             url,
             look: LookConfig::default(),
             comments: CommentsConfig::default(),
+            doctypes: BTreeMap::new(),
         }
     }
 
@@ -131,6 +134,12 @@ impl Builder {
     #[must_use]
     pub fn looking(self, look: LookConfig) -> Self {
         Self { look, ..self }
+    }
+
+    /// The same, with these doctypes for its pages.
+    #[must_use]
+    pub fn typing(self, doctypes: BTreeMap<String, DoctypeConfig>) -> Self {
+        Self { doctypes, ..self }
     }
 
     /// Writes a folder of Markdown as a site, into `out`, in place of whatever an earlier build wrote there: the
@@ -153,6 +162,7 @@ impl Builder {
         let shell = Shell::new(self.title(&folder), Links::Built)
             .living_at(self.url.clone())
             .looking(self.look.clone())
+            .typing(self.doctypes.clone())
             .in_git(head.is_some());
 
         let past = match (&repo, &head, &comments) {
@@ -444,7 +454,7 @@ impl Builder {
             headings: &page.headings,
             graph: Some(within.graph),
         };
-        let body = shell.noted(at, path, &page, history);
+        let body = shell.noted(at, path, &page, history, pages);
         let body = Shell::with_source(&body, &self.renderer.source(markdown));
         let rail = notes.map(|notes| shell.rail(&notes)).unwrap_or_default();
         (

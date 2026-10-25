@@ -109,6 +109,22 @@ ul.results { padding-left: 0; list-style: none; }
 .results small, .muted { color: var(--muted); }
 
 /* A page's history: the line under its title, and the lists of commits. */
+/* What a page is, under its title, from its front matter, as src/shell/doc.rs writes it: its doctype and number, its
+   status, coloured by what it usually means, and its doctype's fields. */
+.doc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: -4px 0 6px; font-size: 13px; }
+.doc-head .doctype { padding: 1px 8px; border-radius: 6px; background: var(--subtle); border: 1px solid var(--line);
+                     font-weight: 600; letter-spacing: 0.02em; }
+.doc-head .status { padding: 1px 8px; border-radius: 999px; font-weight: 600; text-transform: capitalize;
+                    background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--text); }
+.doc-head .status-review, .doc-head .status-running { background: color-mix(in srgb, #d4a72c 30%, transparent); }
+.doc-head .status-accepted, .doc-head .status-done, .doc-head .status-final, .doc-head .status-published,
+.doc-head .status-released { background: color-mix(in srgb, #2da44e 28%, transparent); }
+.doc-head .status-rejected { background: color-mix(in srgb, #cf222e 26%, transparent); }
+.doc-head .status-replaced { color: var(--muted); text-decoration: line-through; }
+.doc-head .status-planned { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.doc-head .unknown, .doc-head .doctype[title] { border: 1px dashed var(--muted); }
+.doc-head .label { color: var(--muted); }
+.doc-head.unread { color: light-dark(#a8432f, #d9826f); cursor: help; }
 .meta { margin: -0.4em 0 1.2em; color: var(--muted); font-size: 13px; }
 .meta a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); }
 ul.log, ul.refs { padding-left: 0; list-style: none; }

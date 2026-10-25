@@ -3,18 +3,20 @@
 //! in; and the page itself, in a column narrow enough to read, styled by `assets/style.css`. A built site and a
 //! served one look the same; only their links differ, as a built site's must work from disk.
 
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use pulldown_cmark::HeadingLevel;
 
 use crate::build::Builder;
-use crate::config::LookConfig;
+use crate::config::{DoctypeConfig, LookConfig};
 use crate::git::Revision;
 use crate::nav::Nav;
 
 mod comments;
 mod compare;
+mod doc;
 mod history;
 mod links;
 mod margin;
@@ -97,6 +99,8 @@ pub struct Shell {
     revisions: bool,
     /// What the search box says: what was searched for, on the page of what it found.
     query: String,
+    /// The doctypes pages may be, by id, for what their front matter says.
+    doctypes: BTreeMap<String, DoctypeConfig>,
 }
 
 impl Shell {
@@ -111,6 +115,7 @@ impl Shell {
             place: PathBuf::from("docs"),
             revisions: false,
             query: String::new(),
+            doctypes: BTreeMap::new(),
         }
     }
 
@@ -169,6 +174,12 @@ impl Shell {
     #[must_use]
     pub fn looking(self, look: LookConfig) -> Self {
         Self { look, ..self }
+    }
+
+    /// The same, with these doctypes for its pages.
+    #[must_use]
+    pub fn typing(self, doctypes: BTreeMap<String, DoctypeConfig>) -> Self {
+        Self { doctypes, ..self }
     }
 
     /// A page of the site, in the folder `at`, from the site's top, as `arch` for `arch/overview.md`, written
