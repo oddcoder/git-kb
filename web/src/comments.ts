@@ -121,6 +121,42 @@ function wordsOf(card: HTMLElement): DOMRect | undefined {
 // Where a card is on the screen: its words, or else its paragraph.
 const spotOf = (card: HTMLElement) => wordsOf(card) ?? blockAt(Number(card.dataset.line))?.getBoundingClientRect();
 
+// Choosing words in the text offers to comment on them: a button beside them opens the box to begin a thread on
+// them, with the words before and after them, to tell them from the same words elsewhere.
+const offer = Object.assign(document.createElement('a'), { className: 'cmt offer', textContent: 'Comment', hidden: true });
+document.body.append(offer);
+// Pressing it would let go of the words before it is clicked.
+offer.addEventListener('pointerdown', (e) => e.preventDefault());
+const AROUND = 32;
+document.addEventListener('selectionchange', () => {
+  const chosen = getSelection();
+  const r = chosen && !chosen.isCollapsed && chosen.rangeCount ? chosen.getRangeAt(0) : null;
+  const blk = (n: Node) => (n instanceof Element ? n : n.parentElement)?.closest<HTMLElement>('main.page .blk[data-lines]');
+  const [first, last] = r ? [blk(r.startContainer), blk(r.endContainer)] : [null, null];
+  offer.hidden = true;
+  if (!r || !first || !last || !cards) return;
+  const region = $$('.blk[data-lines]').filter((b) => {
+    const [a, z] = linesOf(b);
+    return a >= linesOf(first)[0] && z <= linesOf(last)[1];
+  });
+  const { s, map } = text(region);
+  // A character is chosen when both its start and its end are.
+  const inside = map.map(([node, i]) => r.comparePoint(node, i) === 0 && r.comparePoint(node, i + 1) === 0);
+  const start = inside.indexOf(true), end = inside.lastIndexOf(true) + 1;
+  const exact = start < 0 ? '' : s.slice(start, end).trim();
+  if (!exact) return;
+  const query = new URLSearchParams({
+    comment: `${linesOf(first)[0]}-${linesOf(last)[1]}`,
+    exact,
+    prefix: s.slice(Math.max(0, start - AROUND), start).trimStart(),
+    suffix: s.slice(end, end + AROUND).trimEnd(),
+  });
+  offer.href = `?${query}#composer`;
+  const box = [...r.getClientRects()].pop() ?? r.getBoundingClientRect();
+  Object.assign(offer.style, { left: `${box.right + scrollX + 4}px`, top: `${box.bottom + scrollY + 4}px` });
+  offer.hidden = false;
+});
+
 // A place in the page, from the layout's top, and the place in the column, from the cards' top, of the same card.
 interface Pair { page: number; col: number }
 let pairs: Pair[] = [];
@@ -300,6 +336,20 @@ function hook(): void {
   light();
   place();
 }
+// A page opened at a card, as at the box to begin a thread or at a thread just begun, opens with the card's text on
+// the reading line, and the card beside it, rather than with the column jumped to the card alone.
+// It is done once the page has loaded, after the browser's own jump to the card, and its box's autofocus.
+function arrive(): void {
+  const card = location.hash.length > 1 ? document.getElementById(decodeURIComponent(location.hash.slice(1))) : null;
+  if (!card || !cards?.contains(card)) return;
+  requestAnimationFrame(() => {
+    place();
+    const to = spotOf(card);
+    if (to) scrollTo(0, scrollY + to.top - innerHeight * READING);
+    match();
+  });
+}
 document.addEventListener('DOMContentLoaded', hook);
+addEventListener('load', arrive);
 document.addEventListener('kb-refresh', hook);
 addEventListener('resize', again);

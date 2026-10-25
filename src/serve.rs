@@ -349,7 +349,13 @@ impl Server {
                 self.sync();
                 Ok(String::new())
             }
-            "new" => self.begin(store, &field("page"), &field("lines"), &field("body")),
+            "new" => self.begin(
+                store,
+                &field("page"),
+                &field("lines"),
+                Self::words(&form),
+                &field("body"),
+            ),
             "reply" => store
                 .reply(&field("id"), &field("body"))
                 .map(|()| field("id")),
@@ -386,8 +392,16 @@ impl Server {
         }
     }
 
-    /// Begins a thread on lines of a page as it is on disk, as of the last commit, and gives its id.
-    fn begin(&self, store: &Store, page: &str, lines: &str, body: &str) -> anyhow::Result<String> {
+    /// Begins a thread on lines of a page as it is on disk, as of the last commit, or on words of them, and gives
+    /// its id.
+    fn begin(
+        &self,
+        store: &Store,
+        page: &str,
+        lines: &str,
+        words: Snippet,
+        body: &str,
+    ) -> anyhow::Result<String> {
         let page = Path::new(page);
         let files = Builder::files(&self.root, None)?;
         anyhow::ensure!(
@@ -407,7 +421,7 @@ impl Server {
             commit: head.revision.id,
             text: &text,
             lines,
-            snippet: Snippet::default(),
+            snippet: words,
         };
         store.begin(&begin, body)
     }
@@ -447,6 +461,18 @@ impl Server {
         let (start, end) = asked.split_once('-')?;
         let (start, end) = (start.parse().ok()?, end.parse().ok()?);
         (start < end).then_some(start..end)
+    }
+
+    /// The words of a page a thread is begun on, as a query or a form says them: `exact`, with the words before
+    /// and after them, `prefix` and `suffix`, to tell them from the same words elsewhere; none, for a thread on
+    /// whole lines.
+    fn words(query: &str) -> Snippet {
+        let field = |name| Self::param(query, name).unwrap_or_default();
+        Snippet {
+            exact: field("exact"),
+            prefix: field("prefix"),
+            suffix: field("suffix"),
+        }
     }
 
     /// A query's value, by its name, decoded.
@@ -684,7 +710,10 @@ impl View<'_> {
         if let Some(from) = Server::param(query, "diff") {
             return self.compare(file, &from, Server::param(query, "to").as_deref());
         }
-        let composing = Server::param(query, "comment").and_then(|lines| Server::lines(&lines));
+        // A box to begin a thread on lines, as their + opens it, or on words of them, as choosing them does.
+        let composing = Server::param(query, "comment")
+            .and_then(|lines| Server::lines(&lines))
+            .map(|lines| (lines, Server::words(query)));
         self.page(file, composing)
     }
 
@@ -730,7 +759,7 @@ impl View<'_> {
     }
 
     /// The same, for a page with a box open in its column to begin a thread on some of its lines.
-    fn page(&self, file: &Path, composing: Option<std::ops::Range<usize>>) -> Response {
+    fn page(&self, file: &Path, composing: Option<(std::ops::Range<usize>, Snippet)>) -> Response {
         let bytes = match self.read(file) {
             Ok(bytes) => bytes,
             Err(e) => return self.server.failed(&e),
@@ -1749,11 +1778,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_thread_is_begun_on_words_chosen_on_its_page() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        let composing = site
+            .get("/docs/a.html?comment=2-3&exact=On&prefix=&suffix=e.")
+            .await
+            .2;
+        assert!(
+            composing.contains("<blockquote class=\"on\">On</blockquote>")
+                && composing.contains(r#"<input type="hidden" name="exact" value="On">"#)
+                && composing.contains(r#"<input type="hidden" name="suffix" value="e.">"#),
+            "the box quotes the words, and sends them: {composing}"
+        );
+        let (status, back) = site
+            .post(
+                "/_comments/new",
+                "same-origin",
+                "page=a.md&lines=2-3&exact=On&prefix=&suffix=e.&back=%2Fdocs%2Fa.html&body=Hm",
+            )
+            .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{back}");
+        let page = site.get("/docs/a.html").await.2;
+        assert!(
+            page.contains(r#"data-lines="2-3" data-exact="On" data-prefix="" data-suffix="e." "#),
+            "the thread is on the words: {page}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_thread_is_begun_from_its_page() {
         let git = commented("First");
         let site = Site::of(git.top().join("docs"));
         let composing = site.get("/docs/a.html?comment=2-3").await.2;
-        assert!(composing.contains(r#"<form class="composer thread" id="composer" data-line="2" method="post" action="/_comments/new">"#), "{composing}");
+        assert!(composing.contains(r#"<form class="composer thread" id="composer" data-line="2" data-lines="2-3" data-exact="" data-prefix="" data-suffix="" method="post" action="/_comments/new">"#), "{composing}");
         assert!(
             composing.contains("<blockquote class=\"on\">One.</blockquote>"),
             "{composing}"

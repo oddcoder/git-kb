@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use super::{Links, Shell};
-use crate::comments::{Located, OnPage, State, Synced, Thread};
+use crate::comments::{Located, OnPage, Snippet, State, Synced, Thread};
 use crate::git::When;
 use crate::nav::Pages;
 use crate::render::{Mark, Moved, Opts, Renderer};
@@ -21,9 +21,10 @@ pub struct Notes<'a> {
     /// The page, from the site's top.
     page: PathBuf,
     on: OnPage,
-    /// The page's text, and the lines a new thread is being begun on, if one is.
+    /// The page's text, and the lines a new thread is being begun on, if one is, with the words of them it is
+    /// on, if it is on some.
     text: String,
-    composing: Option<Range<usize>>,
+    composing: Option<(Range<usize>, Snippet)>,
     /// What the last sync of the comments did, if there has been one.
     synced: Option<Synced>,
     /// Where each of the page's lines starts.
@@ -52,9 +53,9 @@ impl<'a> Notes<'a> {
         }
     }
 
-    /// The same, with a box open to begin a thread on these lines.
+    /// The same, with a box open to begin a thread on these lines, or on these words of them.
     #[must_use]
-    pub fn composing(self, lines: Option<Range<usize>>) -> Self {
+    pub fn composing(self, lines: Option<(Range<usize>, Snippet)>) -> Self {
         Self {
             composing: lines,
             ..self
@@ -324,27 +325,38 @@ impl Shell {
 
     /// The box to begin a thread in, on the lines asked for, when one is being begun here.
     fn composer(&self, notes: &Notes) -> String {
-        let Some(lines) = notes.composing.clone().filter(|_| self.writes()) else {
+        let Some((lines, words)) = notes.composing.clone().filter(|_| self.writes()) else {
             return String::new();
         };
-        let quote: Vec<&str> = notes
-            .text
-            .lines()
-            .skip(lines.start)
-            .take(lines.end.saturating_sub(lines.start))
-            .collect();
+        let quote = if words.exact.is_empty() {
+            notes
+                .text
+                .lines()
+                .skip(lines.start)
+                .take(lines.end.saturating_sub(lines.start))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            words.exact.clone()
+        };
         let back = Self::escape(&Self::served(&notes.page));
         format!(
             concat!(
-                "<form class=\"composer thread\" id=\"composer\" data-line=\"{start}\" method=\"post\" action=\"/_comments/new\">",
+                "<form class=\"composer thread\" id=\"composer\" data-line=\"{start}\" data-lines=\"{start}-{end}\" data-exact=\"{exact}\" data-prefix=\"{prefix}\" data-suffix=\"{suffix}\" method=\"post\" action=\"/_comments/new\">",
                 "<blockquote class=\"on\">{quote}</blockquote>",
                 "<input type=\"hidden\" name=\"page\" value=\"{page}\">",
                 "<input type=\"hidden\" name=\"lines\" value=\"{start}-{end}\">",
+                "<input type=\"hidden\" name=\"exact\" value=\"{exact}\">",
+                "<input type=\"hidden\" name=\"prefix\" value=\"{prefix}\">",
+                "<input type=\"hidden\" name=\"suffix\" value=\"{suffix}\">",
                 "<input type=\"hidden\" name=\"back\" value=\"{back}\">",
                 "<textarea name=\"body\" rows=\"4\" required placeholder=\"Comment, in Markdown\" autofocus></textarea>",
                 "<p class=\"actions\"><button type=\"submit\">Comment</button> <a href=\"{back}\">Cancel</a></p></form>"
             ),
-            quote = Self::escape(&quote.join("\n")),
+            quote = Self::escape(&quote),
+            exact = Self::escape(&words.exact),
+            prefix = Self::escape(&words.prefix),
+            suffix = Self::escape(&words.suffix),
             page = Self::escape(&notes.page.to_string_lossy()),
             start = lines.start,
             end = lines.end,
@@ -600,7 +612,7 @@ mod tests {
             TEXT,
             &render,
         )
-        .composing(Some(2..3));
+        .composing(Some((2..3, Snippet::default())));
         let rail = shell().rail(&notes);
         assert!(
             rail.contains(r#"<blockquote class="on">One.</blockquote>"#),

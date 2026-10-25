@@ -463,6 +463,9 @@ html:has(#show-resolved:checked) .thread.resolved, html:has(#show-resolved:check
 @media (max-width: 1100px) { .cmts { top: -20px; bottom: auto; right: 0; left: auto; } }
 /* Writing comments, on the folder as it is, served: the + beside a block, shown as it is hovered, which opens the
    box to begin a thread in; and each thread's box to reply in, and its button to resolve or reopen it. */
+/* The button beside words chosen in the text, to comment on them, as web/src/comments.ts offers it. */
+.cmt.offer { position: absolute; z-index: 7; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15); }
+.cmt.offer[hidden] { display: none; }
 .cmt.add { opacity: 0; background: var(--page); color: var(--muted); transition: opacity 0.15s; }
 .blk:hover > .cmts > .cmt.add, .cmt.add:focus-visible { opacity: 1; }
 .rail form { margin: 8px 0 0; }
