@@ -146,48 +146,19 @@ impl Shell {
         }
     }
 
-    /// The markers beside the block at a range of the page's text, in a strip of the block at its right, as tall
-    /// as it is, so that the pointer stays on the block on its way to them: a link to its first thread, with how
-    /// many are open, or a tick when all are resolved; and, where comments are written, a + to begin one on it.
+    /// Where comments are written, the + beside the block at a range of the page's text, to begin a thread on it,
+    /// in a strip of the block at its right, as tall as it is, so that the pointer stays on the block on its way to
+    /// it. What has threads on it is lit in the text instead, by web/src/comments.ts.
     #[must_use]
     pub fn comment_mark(&self, notes: &Notes, range: &Range<usize>) -> String {
-        let markers = self.markers(notes, range);
-        if markers.is_empty() {
-            markers
-        } else {
-            format!("<span class=\"cmts\">{markers}</span>")
+        if !self.writes() {
+            return String::new();
         }
-    }
-
-    /// The same markers, on their own.
-    fn markers(&self, notes: &Notes, range: &Range<usize>) -> String {
         let lines = notes.lines(range);
-        let add = if self.writes() {
-            format!(
-                "<a class=\"cmt add\" href=\"?comment={}-{}#composer\" title=\"Comment on this paragraph\">+</a>",
-                lines.start, lines.end
-            )
-        } else {
-            String::new()
-        };
-        let here: Vec<&Located> = notes
-            .on
-            .found
-            .iter()
-            .filter(|l| lines.contains(&l.lines.start))
-            .collect();
-        let Some(first) = here.first() else {
-            return add;
-        };
-        let id = Self::escape(&first.thread.id);
-        let threads = match here.iter().filter(|l| !l.thread.resolved).count() {
-            0 => {
-                format!("<a class=\"cmt done\" href=\"#t-{id}\" title=\"Resolved comments\">✓</a>")
-            }
-            1 => format!("<a class=\"cmt\" href=\"#t-{id}\" title=\"1 open thread\">💬 1</a>"),
-            n => format!("<a class=\"cmt\" href=\"#t-{id}\" title=\"{n} open threads\">💬 {n}</a>"),
-        };
-        threads + &add
+        format!(
+            "<span class=\"cmts\"><a class=\"cmt add\" href=\"?comment={}-{}#composer\" title=\"Comment on this paragraph\">+</a></span>",
+            lines.start, lines.end
+        )
     }
 
     /// The column of a page's comments: a card for each thread found on it, by where it is, then those whose text
@@ -206,9 +177,19 @@ impl Shell {
         let mut cards = format!("<div class=\"rail-cards\">{}", self.composer(notes));
         for located in &found {
             let card = self.thread(notes, &located.thread, Some(located.state));
+            // And the lines it is on, with the words it is on, if it is on some of them, to light them.
+            let words = &located.thread.snippet;
             cards.push_str(&card.replacen(
                 "<details ",
-                &format!("<details data-line=\"{}\" ", located.lines.start),
+                &format!(
+                    "<details data-line=\"{}\" data-lines=\"{}-{}\" data-exact=\"{}\" data-prefix=\"{}\" data-suffix=\"{}\" ",
+                    located.lines.start,
+                    located.lines.start,
+                    located.lines.end,
+                    Self::escape(&words.exact),
+                    Self::escape(&words.prefix),
+                    Self::escape(&words.suffix)
+                ),
                 1,
             ));
         }
@@ -512,31 +493,23 @@ mod tests {
     }
 
     #[test]
-    fn a_block_s_marker_links_to_its_threads_and_counts_the_open_ones() {
+    fn a_card_says_the_lines_and_the_words_it_is_on_to_light_them() {
+        let mut words = thread("w", 2..3, false, &["Hi"]);
+        words.snippet = Snippet {
+            exact: "On\"e".into(),
+            prefix: "a".into(),
+            suffix: String::new(),
+        };
         let on = OnPage {
-            found: vec![
-                found(thread("t1", 2..3, false, &["Hi"]), State::Same),
-                found(thread("t2", 2..3, false, &["Again"]), State::Same),
-                found(thread("t3", 4..5, true, &["Done"]), State::Same),
-            ],
+            found: vec![found(words, State::Same)],
             lost: vec![],
         };
         let render = |b: &str| b.to_string();
-        let notes = Notes::new(Path::new("a.md"), on, TEXT, &render);
-        let shell = Shell::new("Site".into(), Links::Built);
-        let at = |text: &str| {
-            let start = TEXT.find(text).unwrap();
-            shell.comment_mark(&notes, &(start..start + text.len() + 1))
-        };
-        assert_eq!(
-            at("One."),
-            r##"<span class="cmts"><a class="cmt" href="#t-t1" title="2 open threads">💬 2</a></span>"##
+        let rail = shell().rail(&Notes::new(Path::new("a.md"), on, TEXT, &render));
+        assert!(
+            rail.contains(r#"<details data-line="2" data-lines="2-3" data-exact="On&quot;e" data-prefix="a" data-suffix="" class="thread""#),
+            "{rail}"
         );
-        assert_eq!(
-            at("Two."),
-            r##"<span class="cmts"><a class="cmt done" href="#t-t3" title="Resolved comments">✓</a></span>"##
-        );
-        assert_eq!(at("# A"), "");
     }
 
     #[test]

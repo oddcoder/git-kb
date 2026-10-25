@@ -1724,15 +1724,9 @@ mod tests {
             !body.contains("<script>alert"),
             "a comment's HTML is text: {body}"
         );
-        let marker = body
-            .find(r##"<a class="cmt" href="#t-"##)
-            .expect("a marker");
         assert!(
-            body[marker..].starts_with(r##"<a class="cmt" href="#t-"##)
-                && body[marker..].contains(
-                    "title=\"1 open thread\">💬 1</a><a class=\"cmt add\" href=\"?comment=4-5#composer\""
-                ),
-            "the marker is on the paragraph the thread is on: {body}"
+            body.contains(r#"<details data-line="4" data-lines="4-5" "#),
+            "its card says the lines it is on, to light them: {body}"
         );
     }
 
@@ -1776,7 +1770,7 @@ mod tests {
         let page = site.get("/docs/a.html").await.2;
         assert!(page.contains("About <strong>one</strong>"), "{page}");
         assert!(
-            page.contains("💬 1</a><a class=\"cmt add\" href=\"?comment=2-3#composer\""),
+            page.contains(r#"<details data-line="2" data-lines="2-3" "#),
             "{page}"
         );
     }
