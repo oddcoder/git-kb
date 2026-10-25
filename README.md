@@ -87,6 +87,32 @@ font = "sans"                     # the text font: sans, serif or mono
 code = "system"                   # the code font: system, menlo or courier
 ```
 
+## Doctypes
+
+A page can say what it is in front matter: a block of YAML at its very top.
+
+```markdown
+---
+doctype: design
+number: 12
+status: review
+authors: [Ada, Grace]
+---
+# Cache tiling
+```
+
+`git-kb.toml` declares the doctypes, by the id pages name them by. Each page of one shows, under its title, its doctype and number (Design-12), its status and the fields its doctype lists. Each doctype has a page listing its pages, which the site's contents link to.
+
+```toml
+[doctypes.design]
+name = "Design"                   # shown with a page's number: Design-12
+template = "templates/design.md"  # what git kb new writes
+statuses = ["draft", "review", "accepted", "rejected"]
+fields = ["status", "authors"]    # shown under a page's title, in this order
+```
+
+`git kb new design "Cache tiling" --in docs/designs` writes `docs/designs/cache-tiling.md` from the template. It fills in `{title}`, `{number}` (the doctype's next), `{date}` and `{author}` (from git), and commits nothing.
+
 ## Plugins
 
 Plugins render what Markdown alone does not: fenced blocks such as ```` ```tikz ````, and math such as `$x^2$`. Only the plugins `git-kb.toml` names are used; without a `git-kb.toml`, every built-in one. A page loads a plugin's scripts only if it uses that plugin. `git kb plugins` lists them.

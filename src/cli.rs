@@ -34,6 +34,17 @@ pub enum Command {
         #[arg(default_value = ".")]
         folder: PathBuf,
     },
+    /// Write a new page of a doctype from its template, with its next number; as `git kb new design "Cache tiling"`
+    #[command(display_name = "git-kb")]
+    New {
+        /// The doctype, by its id in git-kb.toml
+        doctype: String,
+        /// The page's title; its file is named from it
+        title: String,
+        /// The folder of the site to write it in; the one git-kb is run in by default
+        #[arg(long = "in", default_value = ".")]
+        folder: PathBuf,
+    },
     /// List the built-in plugins, and the ones git-kb.toml uses
     #[command(display_name = "git-kb")]
     Plugins {

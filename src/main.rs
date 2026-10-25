@@ -1,12 +1,14 @@
 use std::io::IsTerminal;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
 use git_kb::build::Builder;
 use git_kb::cli::{Cli, Command};
 use git_kb::config::Config;
-use git_kb::git::Repo;
+use git_kb::git::{Repo, When};
+use git_kb::new::{New, new_page};
 use git_kb::plugins::{self, Plugins};
 use git_kb::serve::Server;
 use tracing::{error, info};
@@ -26,9 +28,10 @@ fn main() -> ExitCode {
 
     let command = Cli::parse().command;
     let folder = match &command {
-        Command::Serve { folder } | Command::Build { folder } | Command::Plugins { folder } => {
-            folder.clone()
-        }
+        Command::Serve { folder }
+        | Command::Build { folder }
+        | Command::Plugins { folder }
+        | Command::New { folder, .. } => folder.clone(),
     };
     if !folder.is_dir() {
         error!(folder = %folder.display(), "not a folder");
@@ -104,8 +107,43 @@ fn main() -> ExitCode {
             }
         }
         Command::Plugins { .. } => list_plugins(),
+        Command::New {
+            doctype,
+            title,
+            folder,
+        } => return write_new(&config, &doctype, &title, &folder),
     }
     ExitCode::SUCCESS
+}
+
+/// A new page of a doctype, from its template, in a folder of the site; and says where.
+fn write_new(config: &Config, doctype: &str, title: &str, folder: &Path) -> ExitCode {
+    // Who writes it, as git says, and today.
+    let author = Repo::discover(folder)
+        .and_then(|repo| {
+            let repo = repo.git().to_thread_local();
+            repo.committer()
+                .and_then(Result::ok)
+                .map(|who| who.name.to_string())
+        })
+        .unwrap_or_default();
+    let new = New {
+        doctype,
+        title,
+        folder,
+        author: &author,
+        date: &When::now().date(),
+    };
+    match new_page(config, &new) {
+        Ok(file) => {
+            println!("{}", file.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            error!("{e:#}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The built-in plugins, marked when git-kb.toml uses them, and the repository's own.
