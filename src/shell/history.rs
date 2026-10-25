@@ -74,6 +74,7 @@ impl Shell {
         let head = self.doc_head(at, page, pages, history.status.as_ref());
         let meta = self.meta(at, page, history);
         let (title, rest) = rendered.html.split_at(rendered.title_end);
+        let rest = self.cited(rest, pages.front(page));
         format!("{title}{head}{meta}{rest}")
     }
 

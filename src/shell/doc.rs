@@ -327,6 +327,129 @@ impl Shell {
         choice + "</style>\n"
     }
 
+    /// A page's rendered body with its citations, for a doctype that cites: each `[@key]`, or `[@a; @b]`, a link
+    /// to its source, numbered in the order they are first cited, and a list of them at its end, from the
+    /// `sources` of its front matter. A key it has no source for is marked. Code is left as it is.
+    #[must_use]
+    pub fn cited(&self, html: &str, front: Option<&Front>) -> String {
+        let Some(front) = front else {
+            return html.to_string();
+        };
+        let cites = front
+            .doctype()
+            .and_then(|id| self.doctypes.get(id))
+            .is_some_and(|d| d.citations);
+        if !cites {
+            return html.to_string();
+        }
+        let sources = match front.get("sources") {
+            Some(Value::Map(sources)) => sources.as_slice(),
+            _ => &[],
+        };
+        let mut order: Vec<String> = vec![];
+        let mut out = String::with_capacity(html.len());
+        let mut rest = html;
+        let mut code = 0usize;
+        while !rest.is_empty() {
+            // Tags are copied as they are, counting whether they open or close code.
+            if rest.starts_with('<') {
+                let end = rest.find('>').map_or(rest.len(), |i| i + 1);
+                let tag = &rest[..end];
+                if tag.starts_with("<code") || tag.starts_with("<pre") {
+                    code += 1;
+                } else if tag.starts_with("</code") || tag.starts_with("</pre") {
+                    code = code.saturating_sub(1);
+                }
+                out.push_str(tag);
+                rest = &rest[end..];
+                continue;
+            }
+            let text_end = rest.find('<').unwrap_or(rest.len());
+            let text = &rest[..text_end];
+            if code > 0 {
+                out.push_str(text);
+            } else {
+                out.push_str(&Self::cite_in(text, sources, &mut order));
+            }
+            rest = &rest[text_end..];
+        }
+        if order.is_empty() {
+            return out;
+        }
+        out.push_str("<section class=\"references\"><h2 id=\"references\">References</h2><ol>\n");
+        for key in &order {
+            let said = sources.iter().find(|(k, _)| k == key).map_or_else(
+                || "No such source in its front matter".to_string(),
+                |(_, v)| Self::linked_urls(v),
+            );
+            let _ = writeln!(out, "<li id=\"ref-{}\">{said}</li>", Self::escape(key));
+        }
+        out + "</ol></section>\n"
+    }
+
+    /// Text with its citations made links, each key numbered as it is first cited.
+    fn cite_in(text: &str, sources: &[(String, String)], order: &mut Vec<String>) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("[@") {
+            let Some(len) = rest[start..].find(']') else {
+                break;
+            };
+            let inside = &rest[start + 1..start + len];
+            let keys: Vec<&str> = inside
+                .split(';')
+                .map(|k| k.trim().trim_start_matches('@'))
+                .collect();
+            let well_formed = inside.split(';').all(|k| k.trim().starts_with('@'))
+                && keys.iter().all(|k| {
+                    !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || "-_:.".contains(c))
+                });
+            out.push_str(&rest[..start]);
+            if !well_formed {
+                out.push_str(&rest[start..=start + len]);
+                rest = &rest[start + len + 1..];
+                continue;
+            }
+            let links: Vec<String> = keys
+                .iter()
+                .map(|key| {
+                    let n = order.iter().position(|k| k == key).unwrap_or_else(|| {
+                        order.push((*key).to_string());
+                        order.len() - 1
+                    }) + 1;
+                    let missing = if sources.iter().any(|(k, _)| k == key) {
+                        ""
+                    } else {
+                        " broken"
+                    };
+                    format!(
+                        "<a class=\"cite{missing}\" href=\"#ref-{}\">{n}</a>",
+                        Self::escape(key)
+                    )
+                })
+                .collect();
+            let _ = write!(out, "<sup class=\"cites\">[{}]</sup>", links.join(", "));
+            rest = &rest[start + len + 1..];
+        }
+        out + rest
+    }
+
+    /// A source as it is written, escaped, with the addresses in it made links.
+    fn linked_urls(source: &str) -> String {
+        source
+            .split(' ')
+            .map(|word| {
+                let source = Self::escape(word);
+                if word.starts_with("https://") || word.starts_with("http://") {
+                    format!("<a href=\"{source}\">{source}</a>")
+                } else {
+                    source
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// The ids of the doctypes the settings have.
     #[must_use]
     pub fn doctype_ids(&self) -> Vec<String> {
@@ -381,13 +504,21 @@ mod tests {
     use crate::shell::Links;
 
     fn shell() -> Shell {
+        let survey = DoctypeConfig {
+            name: Some("Survey".into()),
+            citations: true,
+            ..DoctypeConfig::default()
+        };
         let design = DoctypeConfig {
             name: Some("Design".into()),
             statuses: vec!["draft".into(), "review".into()],
             fields: vec!["status".into(), "authors".into(), "replaces".into()],
             ..DoctypeConfig::default()
         };
-        Shell::new("Site".into(), Links::Built).typing(BTreeMap::from([("design".into(), design)]))
+        Shell::new("Site".into(), Links::Built).typing(BTreeMap::from([
+            ("design".into(), design),
+            ("survey".into(), survey),
+        ]))
     }
 
     fn pages() -> Pages {
@@ -519,6 +650,36 @@ mod tests {
             !shell()
                 .doc_head(Path::new(""), Path::new("new.md"), &pages, None)
                 .contains("replaced-by")
+        );
+    }
+
+    #[test]
+    fn citations_are_numbered_by_first_use_with_their_sources_at_the_end() {
+        let front = Front::parse(
+            "doctype: survey\nsources:\n  kung: \"Kung, Systolic arrays, 1982. https://x.org/k\"\n  tpu: \"Jouppi, TPU, 2017\"\n",
+        );
+        let html = "<p>As in [@tpu] and [@kung; @tpu], not [@nope] nor [a link].</p><pre><code>[@tpu]</code></pre>";
+        let cited = shell().cited(html, Some(&front));
+        assert!(
+            cited.starts_with(concat!(
+                "<p>As in <sup class=\"cites\">[<a class=\"cite\" href=\"#ref-tpu\">1</a>]</sup> and ",
+                "<sup class=\"cites\">[<a class=\"cite\" href=\"#ref-kung\">2</a>, <a class=\"cite\" href=\"#ref-tpu\">1</a>]</sup>, ",
+                "not <sup class=\"cites\">[<a class=\"cite broken\" href=\"#ref-nope\">3</a>]</sup> nor [a link].</p>",
+                "<pre><code>[@tpu]</code></pre>"
+            )),
+            "{cited}"
+        );
+        assert!(
+            cited.contains("<li id=\"ref-tpu\">Jouppi, TPU, 2017</li>")
+                && cited.contains("<li id=\"ref-kung\">Kung, Systolic arrays, 1982. <a href=\"https://x.org/k\">https://x.org/k</a></li>")
+                && cited.contains("<li id=\"ref-nope\">No such source"),
+            "{cited}"
+        );
+        let design = Front::parse("doctype: design\n");
+        assert_eq!(
+            shell().cited(html, Some(&design)),
+            html,
+            "only a doctype that cites"
         );
     }
 }

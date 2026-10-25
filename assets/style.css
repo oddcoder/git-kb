@@ -126,6 +126,11 @@ ul.results { padding-left: 0; list-style: none; }
 .doc-head .since { margin-left: -8px; color: var(--muted); }
 .doc-head .since a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); }
 .doc-head.unread { color: light-dark(#a8432f, #d9826f); cursor: help; }
+/* A page's citations, as src/shell/doc.rs numbers them, and the list of its sources at its end. */
+.cites { font-size: 0.75em; line-height: 0; }
+.cite.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashed; }
+.references ol { font-size: 14px; color: var(--muted); }
+.references li:target { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .replaced-by { margin: -4px 0 8px; padding: 6px 12px; border-left: 3px solid light-dark(#cf222e, #f85149);
                border-radius: 4px; background: color-mix(in srgb, #cf222e 10%, transparent); font-size: 14px; }
 a.doctype { color: var(--text); text-decoration: none; }

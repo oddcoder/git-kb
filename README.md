@@ -111,6 +111,8 @@ statuses = ["draft", "review", "accepted", "rejected"]
 fields = ["status", "authors"]    # shown under a page's title, in this order
 ```
 
+A doctype with `citations = true` cites its pages' sources: `[@kung1982]`, or `[@a; @b]`, becomes a numbered link to the source of that key under `sources:` in the page's front matter, and the sources cited are listed, in that order, at the page's end. A page that another's `replaces:` names says what replaces it; beside a page's status, it says since when, by whom, in which commit.
+
 `git kb new design "Cache tiling" --in docs/designs` writes `docs/designs/cache-tiling.md` from the template. It fills in `{title}`, `{number}` (the doctype's next), `{date}` and `{author}` (from git), and commits nothing.
 
 ## Plugins
