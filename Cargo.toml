@@ -1,6 +1,6 @@
 [package]
 name = "git-kb"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "A knowledge base of Markdown in git: served or built as a site, reviewed in place, its comments kept in git"
