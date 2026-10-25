@@ -87,10 +87,41 @@ function find(s: string, { exact = '', prefix = '', suffix = '' }: DOMStringMap)
   return best && [best.start, best.end];
 }
 
-// What each card is on, as a range of the page: its words, or else all of its paragraph's text. The cards shown are
-// lit in the text, and the one hovered more.
+// What each card is on, as a range of the page: its words, or else all of its paragraph's text. Each card shown is
+// a stroke under its text, of its own, so that where two are on the same words they are lit twice as deep; the one
+// hovered, more.
 const on = new Map<HTMLElement, Range>();
-const lights = () => typeof CSS !== 'undefined' && 'highlights' in CSS;
+let strokes: HTMLElement | null = null;
+function paint(): void {
+  const page = $('main.page');
+  if (!page) return;
+  if (!strokes?.isConnected) strokes = page.appendChild(Object.assign(document.createElement('div'), { className: 'cmt-strokes' }));
+  const origin = page.getBoundingClientRect();
+  const marks: HTMLElement[] = [];
+  for (const [card, range] of on) {
+    if (!shown(card)) continue;
+    // A line's boxes made one, so that a thread is one stroke on each line it is on, however its words are set.
+    const rows: DOMRect[] = [];
+    for (const box of range.getClientRects()) {
+      if (!box.width) continue;
+      const row = rows.find((r) => Math.abs(r.top - box.top) < 4 && box.left <= r.right + 2);
+      if (row) {
+        const [left, right] = [Math.min(row.left, box.left), Math.max(row.right, box.right)];
+        row.x = left; row.width = right - left;
+        row.height = Math.max(row.bottom, box.bottom) - row.top;
+      } else {
+        rows.push(DOMRect.fromRect(box));
+      }
+    }
+    for (const r of rows) {
+      const mark = document.createElement('div');
+      mark.className = linked.has(card) ? 'lit' : '';
+      Object.assign(mark.style, { left: `${r.left - origin.left}px`, top: `${r.top - origin.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+      marks.push(mark);
+    }
+  }
+  strokes.replaceChildren(...marks);
+}
 function light(): void {
   on.clear();
   for (const card of all()) {
@@ -107,9 +138,7 @@ function light(): void {
     range.setEnd(node, offset + 1);
     on.set(card, range);
   }
-  if (!lights()) return;
-  CSS.highlights.set('kb-commented', new Highlight(...[...on].filter(([c]) => shown(c)).map(([, r]) => r)));
-  CSS.highlights.set('kb-commented-lit', new Highlight());
+  paint();
 }
 // Where a card's words are on the screen, if they can be seen; words in a folded diagram's source cannot.
 function wordsOf(card: HTMLElement): DOMRect | undefined {
@@ -183,6 +212,7 @@ function place(): void {
   }
   // Room below the last card, for the column to scroll as far as the page does.
   cards.style.height = `${Math.max(bottom, root.scrollHeight) + innerHeight}px`;
+  paint();
   match();
 }
 
@@ -277,12 +307,11 @@ function connect(): void {
     lines.append(path, dot);
   }
 }
-const onOf = (card: HTMLElement) => { const r = on.get(card); return r ? [r] : []; };
 function lit(card: HTMLElement, now: boolean): void {
   card.classList.toggle('lit', now);
   blockAt(Number(card.dataset.line))?.classList.toggle('cmt-lit', now);
   if (now) linked.add(card); else linked.delete(card);
-  if (lights()) CSS.highlights.set('kb-commented-lit', new Highlight(...[...linked].flatMap(onOf)));
+  paint();
   connect();
 }
 

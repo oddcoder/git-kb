@@ -430,9 +430,11 @@ a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashe
 .thread.lit { border-color: var(--accent); }
 .thread.flash { animation: flash 1.2s; }
 @keyframes flash { 0%, 40% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); } }
-/* What has comments on it, lit in the text: the words a thread is on, or else its paragraph; more, as its card is. */
-::highlight(kb-commented) { background-color: light-dark(rgba(212, 167, 44, 0.22), rgba(187, 128, 9, 0.28)); }
-::highlight(kb-commented-lit) { background-color: light-dark(rgba(212, 167, 44, 0.5), rgba(187, 128, 9, 0.6)); }
+/* What has comments on it, lit under the text: a stroke for each thread, the words it is on, or else its paragraph;
+   two threads on the same words are two strokes, deeper; the thread whose card is hovered, deeper still. */
+.cmt-strokes { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.cmt-strokes > div { position: absolute; border-radius: 3px; background: light-dark(rgba(212, 167, 44, 0.2), rgba(187, 128, 9, 0.25)); }
+.cmt-strokes > .lit { background: light-dark(rgba(212, 167, 44, 0.45), rgba(187, 128, 9, 0.55)); }
 .blk.cmt-lit::before { background: var(--accent); }
 .cmt-lines { position: fixed; inset: 0; z-index: 4; width: 100vw; height: 100vh; overflow: visible; pointer-events: none; }
 .cmt-lines path { fill: none; stroke: var(--accent); stroke-width: 1.5; opacity: 0.75; }
