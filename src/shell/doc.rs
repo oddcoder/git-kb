@@ -10,9 +10,34 @@ use crate::front::{Front, Value};
 use crate::nav::Pages;
 
 impl Shell {
-    /// The line under a page's title that says what it is; none for a page without front matter.
+    /// The lines under a page's title that say what it is, and what replaces it, if a page says it does; none for a
+    /// page without front matter that nothing replaces.
     #[must_use]
-    pub fn doc_head(&self, at: &Path, front: Option<&Front>, pages: &Pages) -> String {
+    pub fn doc_head(&self, at: &Path, page: &Path, pages: &Pages) -> String {
+        let replaced = pages.replacing(page);
+        let banner = if replaced.is_empty() {
+            String::new()
+        } else {
+            let by: Vec<String> = replaced
+                .iter()
+                .map(|(other, title)| {
+                    format!(
+                        "<a href=\"{}\">{}</a>",
+                        self.link(at, &other.with_extension("html")),
+                        Self::escape(title)
+                    )
+                })
+                .collect();
+            format!(
+                "<p class=\"replaced-by\">Replaced by {}</p>\n",
+                by.join(", ")
+            )
+        };
+        banner + &self.what_it_is(at, pages.front(page), pages)
+    }
+
+    /// The line under a page's title that says what it is, from its front matter.
+    fn what_it_is(&self, at: &Path, front: Option<&Front>, pages: &Pages) -> String {
         let Some(front) = front else {
             return String::new();
         };
@@ -353,7 +378,7 @@ mod tests {
         let front = Front::parse(
             "doctype: design\nnumber: 12\nstatus: review\nauthors: [Ada, Grace]\nreplaces: designs/old.md\nhidden: x\n",
         );
-        let head = shell().doc_head(Path::new("designs"), Some(&front), &pages());
+        let head = shell().what_it_is(Path::new("designs"), Some(&front), &pages());
         assert_eq!(
             head,
             concat!(
@@ -368,10 +393,10 @@ mod tests {
     #[test]
     fn what_its_doctype_does_not_know_is_said_and_an_unread_front_matter_too() {
         let odd = Front::parse("doctype: design\nstatus: shipped\n");
-        let head = shell().doc_head(Path::new(""), Some(&odd), &pages());
+        let head = shell().what_it_is(Path::new(""), Some(&odd), &pages());
         assert!(head.contains("status status-shipped unknown"), "{head}");
         let none = Front::parse("doctype: memo\nowner: Ada\n");
-        let head = shell().doc_head(Path::new(""), Some(&none), &pages());
+        let head = shell().what_it_is(Path::new(""), Some(&none), &pages());
         assert!(
             head.contains("title=\"No such doctype in git-kb.toml\">memo</a>")
                 && head.contains("Owner</span> Ada"),
@@ -380,10 +405,10 @@ mod tests {
         let broken = Front::parse("status: [unclosed\n");
         assert!(
             shell()
-                .doc_head(Path::new(""), Some(&broken), &pages())
+                .what_it_is(Path::new(""), Some(&broken), &pages())
                 .contains("could not be read")
         );
-        assert_eq!(shell().doc_head(Path::new(""), None, &pages()), "");
+        assert_eq!(shell().what_it_is(Path::new(""), None, &pages()), "");
     }
 
     #[test]
@@ -429,5 +454,28 @@ mod tests {
         );
         assert_eq!(Shell::plural("Study"), "Studies");
         assert_eq!(Shell::plural("Survey"), "Surveys");
+    }
+
+    #[test]
+    fn a_page_another_says_it_replaces_says_what_replaces_it() {
+        let files = [PathBuf::from("old.md"), PathBuf::from("new.md")];
+        let pages = Pages::new(&files, &Renderer::new(), |f| {
+            Some(if f == Path::new("new.md") {
+                "---\ndoctype: design\nreplaces: Old tiling\n---\n# New tiling\n".into()
+            } else {
+                "# Old tiling\n".into()
+            })
+        });
+        let head = shell().doc_head(Path::new(""), Path::new("old.md"), &pages);
+        assert_eq!(
+            head,
+            "<p class=\"replaced-by\">Replaced by <a href=\"./new.html\">New tiling</a></p>\n",
+            "by its title, as here, or its path"
+        );
+        assert!(
+            !shell()
+                .doc_head(Path::new(""), Path::new("new.md"), &pages)
+                .contains("replaced-by")
+        );
     }
 }

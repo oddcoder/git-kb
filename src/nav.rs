@@ -146,6 +146,25 @@ impl Pages {
         found
     }
 
+    /// The pages that say they replace a page, by its path or its title, in their front matter's `replaces`;
+    /// each with its title.
+    #[must_use]
+    pub fn replacing(&self, page: &Path) -> Vec<(&Path, &str)> {
+        self.fronts
+            .iter()
+            .filter(|(other, front)| {
+                other.as_path() != page
+                    && front.text("replaces").and_then(|r| self.named(r)) == Some(page)
+            })
+            .map(|(other, _)| {
+                (
+                    other.as_path(),
+                    self.titles.get(other).map_or("", String::as_str),
+                )
+            })
+            .collect()
+    }
+
     /// What a page is about, if it says.
     #[must_use]
     pub fn summary(&self, page: &Path) -> Option<&str> {

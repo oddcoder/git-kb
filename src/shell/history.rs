@@ -62,7 +62,7 @@ impl Shell {
         history: &PageHistory,
         pages: &Pages,
     ) -> String {
-        let head = self.doc_head(at, pages.front(page), pages);
+        let head = self.doc_head(at, page, pages);
         let meta = self.meta(at, page, history);
         let (title, rest) = rendered.html.split_at(rendered.title_end);
         format!("{title}{head}{meta}{rest}")
