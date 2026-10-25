@@ -683,6 +683,12 @@ impl Shell {
         }
     }
 
+    /// The doctypes the settings have.
+    #[must_use]
+    pub fn doctypes(&self) -> crate::schema::Doctypes {
+        std::sync::Arc::clone(&self.doctypes)
+    }
+
     /// The ids of the doctypes the settings have.
     #[must_use]
     pub fn doctype_ids(&self) -> Vec<String> {

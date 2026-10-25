@@ -17,11 +17,12 @@
 //! pages' style sheet and scripts under `/_assets/`, and `/_events`. Open pages load again when the site changes:
 //! the server tells them, as events from `/_events`, and a line of script in each page, the shell's, reloads it.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::{Context, anyhow};
 use axum::Router;
@@ -68,6 +69,9 @@ pub struct Server {
     changes: broadcast::Sender<Change>,
     /// Whether it is stopping, told to open pages' event streams, which would otherwise never end.
     stopping: watch::Sender<bool>,
+    /// The search bundles built, of the folder as it is, by "", and of commits, by their names; any change drops
+    /// them, to be built again when next asked for.
+    found: Mutex<HashMap<String, Arc<crate::find::Bundle>>>,
 }
 
 /// What a request is answered from: the site's files, on disk or at a commit, and the shell of its pages.
@@ -101,6 +105,7 @@ impl Server {
             shell,
             changes: broadcast::channel(16).0,
             stopping: watch::channel(false).0,
+            found: Mutex::new(HashMap::new()),
         }
     }
 
@@ -160,6 +165,18 @@ impl Server {
             .ok();
         let stopping = self.stopping.clone();
         let server = Arc::new(self);
+        // What search found is of the site as it was: any change drops it.
+        let searched = Arc::clone(&server);
+        let mut dropped = server.changes.subscribe();
+        tokio::spawn(async move {
+            while dropped.recv().await.is_ok() {
+                searched
+                    .found
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear();
+            }
+        });
         if server.comments.is_some() {
             // A fetch or a pull brings others' branches: their comments are synced then too.
             let puller = Arc::clone(&server);
@@ -258,6 +275,9 @@ impl Server {
         }
         if path == "/_search" {
             return self.search(query.unwrap_or(""));
+        }
+        if let Some(rest) = path.strip_prefix("/_pagefind/") {
+            return self.search_file(rest);
         }
         if path == "/_graph" {
             return self.graph_page(query.unwrap_or(""));
@@ -654,18 +674,23 @@ impl Server {
 
     /// What a search finds: in the folder as it is, or at the commit `ref` names.
     fn search(&self, query: &str) -> Response {
-        let asked = Self::param(query, "q").unwrap_or_default();
         let view = match self.view_of(query) {
             Ok(view) => view,
             Err(answer) => return *answer,
         };
-        let index = crate::search::Index::new(&view.files, &self.renderer, |f| {
-            view.read(f)
-                .ok()
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-        });
-        let shell = view.shell.clone().asking(&asked);
-        let body = shell.results(&asked, &index.search(&asked));
+        let bundle = match Self::param(query, "ref") {
+            Some(name) => format!(
+                "/{}/ref/{}",
+                crate::find::BUNDLE,
+                shell::Shell::encode_id(&name)
+            ),
+            None => format!("/{}", crate::find::BUNDLE),
+        };
+        let shell = view
+            .shell
+            .clone()
+            .asking(&Self::param(query, "q").unwrap_or_default());
+        let body = shell.search_page(Path::new(""), &bundle, "/");
         let pages = view.pages();
         let nav = Nav {
             pages: &pages,
@@ -674,6 +699,73 @@ impl Server {
             graph: None,
         };
         Html(shell.page(Path::new(""), "", "Search", &body, &nav)).into_response()
+    }
+
+    /// A file of a search bundle: of the folder as it is, as `pagefind.js`, or of a commit, as
+    /// `ref/main/pagefind.js`; the bundle built when first asked for.
+    fn search_file(&self, path: &str) -> Response {
+        let (name, file) = match path
+            .strip_prefix("ref/")
+            .and_then(|rest| rest.split_once('/'))
+        {
+            Some((name, file)) => (
+                percent_decode_str(name).decode_utf8_lossy().into_owned(),
+                file,
+            ),
+            None => (String::new(), path),
+        };
+        if !name.is_empty()
+            && let Err(e) = self.snapshot(&name)
+        {
+            return self.missing(&format!("{e:#}"));
+        }
+        let bundle = match self.bundle(&name) {
+            Ok(bundle) => bundle,
+            Err(e) => return self.failed(&e),
+        };
+        match bundle.get(file) {
+            Some(bytes) => {
+                let kind = mime_guess::from_path(file).first_or_octet_stream();
+                ([(header::CONTENT_TYPE, kind.to_string())], bytes.to_vec()).into_response()
+            }
+            None => self.missing("No such file of search."),
+        }
+    }
+
+    /// The search bundle of the folder as it is, by "", or of the commit `name` names: kept, or built.
+    fn bundle(&self, name: &str) -> anyhow::Result<Arc<crate::find::Bundle>> {
+        let kept = self
+            .found
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(name)
+            .cloned();
+        if let Some(bundle) = kept {
+            return Ok(bundle);
+        }
+        let snapshot = if name.is_empty() {
+            None
+        } else {
+            Some(self.snapshot(name)?)
+        };
+        let view = self.view(snapshot)?;
+        let pages = crate::find::pages(
+            &view.files,
+            &self.renderer,
+            &self.shell.doctypes(),
+            |f| {
+                view.read(f)
+                    .ok()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+            },
+            |f| view.shell.link(Path::new(""), &f.with_extension("html")),
+        );
+        let bundle = crate::find::bundle_blocking(&pages)?;
+        self.found
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(name.to_string(), Arc::clone(&bundle));
+        Ok(bundle)
     }
 
     /// The list of the branches and tags, and of every commit up to the last that changed a page.
@@ -1712,21 +1804,35 @@ mod tests {
         git.write("docs/a.md", "# DMA\n\nMoves bytes.\n");
         let site = Site::of(git.top().join("docs"));
         let found = site.get("/_search?q=moves+bytes").await.2;
-        assert!(found.contains("1 page matches “moves bytes”."), "{found}");
         assert!(
-            found.contains(r#"<a href="/docs/a.md#dma"><strong>DMA</strong>"#),
-            "{found}"
-        );
-        assert!(
-            found.contains("<mark>Moves</mark> <mark>bytes</mark>"),
+            found.contains(r#"<div id="kb-search" data-bundle="/_pagefind/" data-base="/">"#),
             "{found}"
         );
         assert!(
             found.contains(r#"value="moves bytes""#),
             "the box says what was searched for: {found}"
         );
+        let (status, kind, entry) = site.get("/_pagefind/pagefind-entry.json").await;
+        assert_eq!(
+            (status, kind.as_str()),
+            (StatusCode::OK, "application/json"),
+            "{entry}"
+        );
+        let (status, kind, _) = site.get("/_pagefind/pagefind-ui.js").await;
+        assert_eq!((status, kind.as_str()), (StatusCode::OK, "text/javascript"));
         let then = site.get("/_search?q=bytes&ref=main").await.2;
-        assert!(then.contains("Nothing matches"), "{then}");
+        assert!(
+            then.contains(r#"data-bundle="/_pagefind/ref/main/""#),
+            "{then}"
+        );
+        assert_eq!(
+            site.get("/_pagefind/ref/main/pagefind-entry.json").await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            site.get("/_pagefind/ref/nope/pagefind.js").await.0,
+            StatusCode::NOT_FOUND
+        );
         let page = site.get("/ref/main/a.md").await.2;
         assert!(
             page.contains(r#"<input type="hidden" name="ref" value="main">"#),

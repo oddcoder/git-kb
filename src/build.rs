@@ -324,27 +324,7 @@ impl Builder {
         }
         fs::create_dir_all(to)?;
         Self::site_pages(shell, &pages, &graph, to)?;
-        // Its search: a page that searches, in the browser, the index beside it.
-        let index = crate::search::Index::new(files, &self.renderer, |f| {
-            read(f)
-                .ok()
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-        });
-        let search = to.join("_search.html");
-        fs::create_dir_all(to)?;
-        let nav = Nav {
-            pages: &pages,
-            current: Path::new(""),
-            headings: &[],
-            graph: None,
-        };
-        let body = shell.search_page(Path::new(""));
-        fs::write(
-            &search,
-            shell.page(Path::new(""), "_search.html", "Search", &body, &nav),
-        )
-        .with_context(|| search.display().to_string())?;
-        fs::write(to.join("_search.js"), index.script())?;
+        self.search(shell, files, &read, &pages, to)?;
         for (path, folder) in &folders {
             if Self::index(shell, &pages, to, path, folder)? {
                 built.folders += 1;
@@ -644,6 +624,51 @@ impl Builder {
     fn blame_of(past: &Past, path: &Path, text: &str) -> Option<Arc<crate::git::Blame>> {
         let now = past.head.is_some().then_some(text.as_bytes());
         past.repo.blame(&past.at, path, now).ok()
+    }
+
+    /// A site's search: Pagefind's bundle of its pages, beside it, and the page that searches it in the browser.
+    fn search(
+        &self,
+        shell: &Shell,
+        files: &[PathBuf],
+        read: &dyn Fn(&Path) -> anyhow::Result<Vec<u8>>,
+        pages: &Pages,
+        to: &Path,
+    ) -> anyhow::Result<()> {
+        let found = crate::find::pages(
+            files,
+            &self.renderer,
+            &self.doctypes,
+            |f| {
+                read(f)
+                    .ok()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+            },
+            |f| format!("/{}", Self::link(&f.with_extension("html"))),
+        );
+        let bundle = crate::find::bundle_blocking(&found)?;
+        for (name, bytes) in bundle.files() {
+            let file = to.join(crate::find::BUNDLE).join(name);
+            if let Some(dir) = file.parent() {
+                fs::create_dir_all(dir)?;
+            }
+            fs::write(&file, bytes).with_context(|| file.display().to_string())?;
+        }
+        let search = to.join("_search.html");
+        fs::create_dir_all(to)?;
+        let nav = Nav {
+            pages,
+            current: Path::new(""),
+            headings: &[],
+            graph: None,
+        };
+        let body = shell.search_page(Path::new(""), &format!("./{}", crate::find::BUNDLE), ".");
+        fs::write(
+            &search,
+            shell.page(Path::new(""), "_search.html", "Search", &body, &nav),
+        )
+        .with_context(|| search.display().to_string())?;
+        Ok(())
     }
 
     /// A site's pages of its own: the graph of every page and link, and each doctype's list of pages.
@@ -951,6 +976,10 @@ mod tests {
                 .filter(|e| {
                     let name = e.file_name().to_string_lossy();
                     !name.starts_with("_search.")
+                        && !e
+                            .path()
+                            .components()
+                            .any(|c| c.as_os_str() == crate::find::BUNDLE)
                         && name != "_graph.html"
                         && !name.starts_with("_doctype-")
                 })
@@ -1488,14 +1517,14 @@ mod tests {
         );
         let search = tree.read("site/docs/_search.html");
         assert!(
-            search.contains(
-                r#"<script src="./_search.js"></script><script src="../_assets/search.js">"#
-            ),
-            "{search}"
+            search.contains(r#"<div id="kb-search" data-bundle="./_pagefind/" data-base=".">"#)
+                && search.contains(r#"<script src="./_pagefind/pagefind-ui.js"></script><script src="../_assets/search.js">"#),
+            "Pagefind's look, searching the bundle beside it: {search}"
         );
         assert!(
-            tree.read("site/docs/_search.js")
-                .contains(r#""href":"arch/dma.html""#)
+            tree.read("site/docs/_pagefind/pagefind-entry.json")
+                .contains(r#""en""#),
+            "indexed as English, so its words are stemmed"
         );
         assert_eq!(tree.read("site/_assets/search.js"), shell::SEARCH);
     }

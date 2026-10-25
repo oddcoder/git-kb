@@ -583,3 +583,21 @@ html:has(#show-resolved:checked) .thread.resolved, html:has(#show-resolved:check
   .ask-ai-open { anchor-name: --ask; }
   .pop.ask-ai { margin-top: 4px; position-anchor: --ask; position-area: bottom span-right; }
 }
+
+/* Search, by Pagefind, in the site's look: its colours, its font and its corners git-kb's. */
+#kb-search {
+  --pagefind-ui-scale: 0.85;
+  --pagefind-ui-primary: var(--accent);
+  --pagefind-ui-text: var(--text);
+  --pagefind-ui-background: var(--page);
+  --pagefind-ui-border: var(--line);
+  --pagefind-ui-tag: var(--subtle);
+  --pagefind-ui-border-width: 1px;
+  --pagefind-ui-border-radius: 8px;
+  --pagefind-ui-font: inherit;
+}
+#kb-search mark { background: color-mix(in srgb, var(--accent) 28%, transparent); color: inherit; }
+#kb-search .pagefind-ui__result-link { color: var(--accent); }
+#kb-search fieldset { margin: 0; padding: 0; border: 0; }
+#kb-search .pagefind-ui__search-clear { border: 0; background: none; color: var(--muted); }
+#kb-search .pagefind-ui__search-clear:hover { color: var(--accent); }
