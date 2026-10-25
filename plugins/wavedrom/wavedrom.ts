@@ -119,6 +119,8 @@ function draw(): void {
       svg.id ||= `${out.id}-svg`;
       restyle(svg);
       theme(svg);
+      // Its own width, for the style sheet to draw a small circuit larger.
+      svg.style.setProperty('--kb-w', `${parseFloat(svg.getAttribute('width') ?? '300')}px`);
       box.classList.add('drawn');
       pre.classList.remove('kb-error');
       figure.setAttribute('data-rendered', '');

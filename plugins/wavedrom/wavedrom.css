@@ -4,3 +4,18 @@
 .kb-wavedrom svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
 .kb-stage pre.kb-wavedrom-source { margin: 0; background: none; }
 .kb-wavedrom.drawn pre.kb-wavedrom-source { display: none; }
+/* A logic circuit ({assign: [...]}) takes its look from classes WaveDrom's own pages style, not from its drawing;
+   here in the theme's colors: gates outlined on the paper, wires as lines, and the boxes behind the inputs' names
+   left out. */
+.kb-wavedrom .gate { fill: color-mix(in srgb, var(--accent) 12%, var(--page)); stroke: var(--text); stroke-width: 1; }
+.kb-wavedrom .wire { fill: none; stroke: var(--text); stroke-width: 1; }
+.kb-wavedrom .siglabel { fill: none; stroke: none; }
+.kb-wavedrom .pinname, .kb-wavedrom .wirename { fill: var(--text); }
+.kb-wavedrom .grid { fill: none; stroke: none; }
+.kb-wavedrom .pinname, .kb-wavedrom .wirename, .kb-wavedrom .bodylabel { font: 500 12px/1 system-ui, sans-serif; }
+.kb-wavedrom .pinname { text-anchor: end; }
+.kb-wavedrom .wirename { text-anchor: start; }
+.kb-wavedrom .bodylabel { text-anchor: middle; }
+/* A circuit is drawn small: at twice its size, if there is room. */
+.kb-wavedrom svg:has(.gate) { width: min(100%, calc(2 * var(--kb-w, 300px))); }
+.kb-wavedrom:has(.gate), .kb-wavedrom-out:has(.gate) { width: 100%; }
