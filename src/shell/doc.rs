@@ -466,7 +466,14 @@ impl Shell {
         for c in &columns {
             let _ = write!(head, "<th>{}</th>", Self::label(c));
         }
-        head.push_str("<th></th></tr>");
+        // A column of what is wrong with each page, only when any page has something wrong.
+        let flagged = found
+            .iter()
+            .any(|(_, _, front)| !self.problems(front).is_empty());
+        if flagged {
+            head.push_str("<th>Problems</th>");
+        }
+        head.push_str("</tr>");
         let mut rows = String::new();
         for (path, title, front) in &found {
             let mut data = String::new();
@@ -496,17 +503,20 @@ impl Shell {
                     .map_or_else(String::new, |v| self.value(at, field, v, schema, pages));
                 let _ = write!(rows, "<td>{cell}</td>");
             }
-            let problems = self.problems(front);
-            let flag = if problems.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "<span class=\"problem-flag\" title=\"{}\">⚠ {}</span>",
-                    Self::escape(&problems.join("\n")),
-                    problems.len()
-                )
-            };
-            let _ = writeln!(rows, "<td>{flag}</td></tr>");
+            if flagged {
+                let problems = self.problems(front);
+                let flag = if problems.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "<span class=\"problem-flag\" title=\"{}\">⚠ {}</span>",
+                        Self::escape(&problems.join("\n")),
+                        problems.len()
+                    )
+                };
+                let _ = write!(rows, "<td>{flag}</td>");
+            }
+            rows.push_str("</tr>\n");
         }
         let name = doctype.map_or(id, |d| d.name.as_str());
         let empty = if found.is_empty() {
@@ -875,6 +885,19 @@ mod tests {
         );
         assert!(
             !list.contains("<th>Actions</th>") && !list.contains("<th>Sources</th>"),
+            "{list}"
+        );
+        assert!(
+            !list.contains("<th>Problems</th>") && !list.contains("<th></th>"),
+            "no column of problems when there are none: {list}"
+        );
+        let broken = self::tests::pages(&[(
+            "c.md",
+            "---\ndoctype: design\nnumber: 3\nstatus: shipped\nauthors: [Cy]\n---\n# C\n",
+        )]);
+        let list = shell().doctype_list(Path::new(""), "design", &broken);
+        assert!(
+            list.contains("<th>Problems</th>") && list.contains("class=\"problem-flag\""),
             "{list}"
         );
     }
