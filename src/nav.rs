@@ -12,6 +12,8 @@ use crate::render::{Heading, Renderer};
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Pages {
     titles: BTreeMap<PathBuf, String>,
+    /// What each page is about, for a card of it, if it says, by `Renderer::summary`.
+    summaries: BTreeMap<PathBuf, String>,
 }
 
 /// What a page's sidebar shows: the site's pages, which one is shown, and the page's headings.
@@ -31,6 +33,7 @@ impl Nav<'_> {
     pub fn none() -> Nav<'static> {
         static NONE: Pages = Pages {
             titles: BTreeMap::new(),
+            summaries: BTreeMap::new(),
         };
         Nav {
             pages: &NONE,
@@ -50,22 +53,27 @@ impl Pages {
         renderer: &Renderer,
         read: impl Fn(&Path) -> Option<String>,
     ) -> Self {
-        let titles = files
+        let mut pages = Self::default();
+        for f in files
             .iter()
             .filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")))
-            .map(|f| {
-                let title = read(f)
-                    .and_then(|text| renderer.title(&text))
-                    .unwrap_or_else(|| {
-                        f.file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    });
-                (f.clone(), title)
-            })
-            .collect();
-        Self { titles }
+        {
+            let text = read(f);
+            let title = text
+                .as_deref()
+                .and_then(|text| renderer.title(text))
+                .unwrap_or_else(|| {
+                    f.file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                });
+            pages.titles.insert(f.clone(), title);
+            if let Some(summary) = text.as_deref().and_then(|text| renderer.summary(text)) {
+                pages.summaries.insert(f.clone(), summary);
+            }
+        }
+        pages
     }
 
     /// A folder's folders that have pages, by name, and its own pages, by path, with their titles, but for the
@@ -107,6 +115,36 @@ impl Pages {
             .map(|(path, _)| path.as_path())
     }
 
+    /// What a page is about, if it says.
+    #[must_use]
+    pub fn summary(&self, page: &Path) -> Option<&str> {
+        self.summaries.get(page).map(String::as_str)
+    }
+
+    /// Every page under a folder, by the folder it is in below it, as `""` for its own and `a/b` for one two
+    /// down, each by title; but for the page the folder is shown by, as it is the folder's.
+    #[must_use]
+    pub fn under(&self, folder: &Path) -> BTreeMap<PathBuf, Vec<(&Path, &str)>> {
+        let home = self.home(folder);
+        let mut under: BTreeMap<PathBuf, Vec<(&Path, &str)>> = BTreeMap::new();
+        for (path, title) in &self.titles {
+            let Ok(below) = path.strip_prefix(folder) else {
+                continue;
+            };
+            if Some(path.as_path()) != home {
+                let sub = below.parent().unwrap_or(Path::new("")).to_path_buf();
+                under
+                    .entry(sub)
+                    .or_default()
+                    .push((path.as_path(), title.as_str()));
+            }
+        }
+        for pages in under.values_mut() {
+            pages.sort_by_key(|(_, title)| title.to_lowercase());
+        }
+        under
+    }
+
     /// A page's title, if it is one of the site's.
     #[must_use]
     pub fn title(&self, page: &Path) -> Option<&str> {
@@ -135,6 +173,7 @@ mod tests {
                 .iter()
                 .map(|(path, title)| (PathBuf::from(path), (*title).to_string()))
                 .collect(),
+            summaries: BTreeMap::new(),
         }
     }
 

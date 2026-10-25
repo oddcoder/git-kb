@@ -412,6 +412,50 @@ impl Renderer {
         None
     }
 
+    /// What a page is about, for a card of it: the text of its first paragraph that is not in a list or a quote,
+    /// cut at a word to about `SUMMARY` characters.
+    #[must_use]
+    pub fn summary(&self, markdown: &str) -> Option<String> {
+        const SUMMARY: usize = 160;
+        let mut events = Parser::new_ext(markdown, self.options);
+        let mut depth = 0usize;
+        while let Some(event) = events.next() {
+            match event {
+                Event::Start(Tag::Paragraph) if depth == 0 => {
+                    // A line's end, in the text, is a space between its words.
+                    let inside: Vec<Event> = Self::inside(&mut events)
+                        .into_iter()
+                        .map(|e| match e {
+                            Event::SoftBreak | Event::HardBreak => Event::Text(" ".into()),
+                            e => e,
+                        })
+                        .collect();
+                    let text = Self::plain_text(&inside);
+                    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if text.chars().count() <= SUMMARY {
+                        return Some(text);
+                    }
+                    let cut: String = text.chars().take(SUMMARY).collect();
+                    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+                    return Some(format!("{}…", cut.trim_end_matches([',', ';', ':', '.'])));
+                }
+                Event::Start(Tag::List(_) | Tag::BlockQuote(_) | Tag::FootnoteDefinition(_)) => {
+                    depth += 1;
+                }
+                Event::End(
+                    TagEnd::List(_) | TagEnd::BlockQuote(_) | TagEnd::FootnoteDefinition,
+                ) => {
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// A page's labelled figures, numbered in the order they come.
     #[must_use]
     pub fn figures(&self, markdown: &str) -> Vec<Figure> {
@@ -1528,5 +1572,22 @@ mod tests {
             "{}",
             page.html
         );
+    }
+
+    #[test]
+    fn a_summary_is_the_first_paragraph_out_of_lists_and_quotes_cut_at_a_word() {
+        let r = Renderer::new();
+        assert_eq!(
+            r.summary("# T\n\n- a list\n\n> a quote\n\nThe *first*\nparagraph.\n\nAnother.\n")
+                .as_deref(),
+            Some("The first paragraph.")
+        );
+        let long = format!("# T\n\n{}\n", "word ".repeat(60));
+        let summary = r.summary(&long).unwrap();
+        assert!(
+            summary.ends_with("word…") && summary.chars().count() <= 161,
+            "{summary}"
+        );
+        assert_eq!(r.summary("# Only a title\n"), None);
     }
 }

@@ -40,7 +40,7 @@ use tracing::{debug, error, info, warn};
 
 mod agents;
 
-use crate::build::{Builder, Folder};
+use crate::build::Builder;
 use crate::comments::{Begin, Snippet, Store};
 use crate::config::{CommentsConfig, LookConfig};
 use crate::diff::Diff;
@@ -721,17 +721,7 @@ impl View<'_> {
         if let Some(home) = pages.home(at) {
             return self.file(home);
         }
-        let (folders, here) = pages.entries(at);
-        let mut folder = Folder {
-            folders,
-            ..Folder::default()
-        };
-        for (file, title) in here {
-            let html = file.with_extension("html");
-            let html = html.file_name().unwrap_or_default().to_string_lossy();
-            folder.pages.insert(html.into_owned(), title.to_owned());
-        }
-        Html(Builder::listing(&self.shell, &pages, at, &folder)).into_response()
+        Html(Builder::listing(&self.shell, &pages, at)).into_response()
     }
 
     /// A file of the site: a page, rendered, or any other file, as it is.
@@ -1144,15 +1134,22 @@ mod tests {
         );
         let list = site.get("/docs/algebra/").await.2;
         assert!(
-            list.contains(r#"<a href="deep/index.html">deep/</a>"#),
+            list.contains(r#"<h2 class="folder"><a href="deep/index.html">deep/</a></h2>"#),
             "{list}"
         );
-        assert!(list.contains(r#"<a href="gemm.html">GEMM</a>"#), "{list}");
+        assert!(
+            list.contains(r#"<a href="gemm.html"><strong>GEMM</strong>"#),
+            "{list}"
+        );
+        assert!(
+            list.contains(r#"<a href="deep/x.html"><strong>X</strong>"#),
+            "the pages of the folders under it too: {list}"
+        );
         assert!(
             site.get("/docs/algebra/deep/index.html")
                 .await
                 .2
-                .contains(r#"<a href="x.html">X</a>"#)
+                .contains(r#"<a href="x.html"><strong>X</strong>"#)
         );
     }
 

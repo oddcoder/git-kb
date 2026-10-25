@@ -345,9 +345,16 @@ pre.diff-lines code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff-lines .l-same { color: var(--muted); }
 
 /* A folder's list of its folders and pages. */
-.listing { padding-left: 0; list-style: none; }
-.listing li { padding: 6px 0; border-bottom: 1px solid var(--line); }
-.listing .folder::before { content: "▸ "; color: var(--muted); }
+/* A folder's list: a card of each page under it, with its title and what it is about, by the folder it is in. */
+h2.folder { font-size: 1.1em; }
+h2.folder a { color: var(--text); }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; padding: 0;
+         list-style: none; }
+.cards li + li { margin-top: 0; }
+.cards a { display: flex; flex-direction: column; gap: 6px; height: 100%; padding: 14px 16px; border: 1px solid var(--line);
+           border-radius: 10px; background: var(--subtle); color: var(--text); transition: border-color 0.15s; }
+.cards a:hover { border-color: var(--accent); text-decoration: none; }
+.cards span { color: var(--muted); font-size: 14px; line-height: 1.45; }
 
 /* Figures: diagrams of any plugin, on a paper with a faint grain, numbered and captioned in the bar under them,
    with their source. */

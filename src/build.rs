@@ -14,6 +14,7 @@
 //! which are neither followed nor copied.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -653,39 +654,50 @@ impl Builder {
             debug!(folder = %path.display(), "redirected to its README");
             return Ok(true);
         }
-        fs::write(&index, Self::listing(shell, pages, path, folder))
+        fs::write(&index, Self::listing(shell, pages, path))
             .with_context(|| index.display().to_string())?;
         debug!(folder = %path.display(), "indexed");
         Ok(true)
     }
 
-    /// A folder's list: its folders, each a link to its `index.html`, and then its pages, by title.
-    pub(crate) fn listing(shell: &Shell, pages: &Pages, path: &Path, folder: &Folder) -> String {
+    /// A folder's list: every page under it, a card of each, with its title and what it is about, by the folder
+    /// it is in, each folder's name a link to its own list.
+    pub(crate) fn listing(shell: &Shell, pages: &Pages, path: &Path) -> String {
         let name = path
             .file_name()
             .map_or_else(|| "Contents".into(), |n| n.to_string_lossy().into_owned());
-        let items: String = folder
-            .folders
-            .iter()
-            .map(|f| {
-                format!(
-                    "<li class=\"folder\"><a href=\"{}/index.html\">{}/</a></li>\n",
-                    Self::href(f),
-                    Self::escape(f)
-                )
-            })
-            .chain(folder.pages.iter().map(|(file, title)| {
-                format!(
-                    "<li><a href=\"{}\">{}</a></li>\n",
-                    Self::href(file),
+        let mut body = format!("<h1>{}</h1>\n", Self::escape(&name));
+        for (sub, here) in pages.under(path) {
+            if !sub.as_os_str().is_empty() {
+                let _ = writeln!(
+                    body,
+                    "<h2 class=\"folder\"><a href=\"{}/index.html\">{}/</a></h2>",
+                    Self::link(&sub),
+                    Self::escape(&sub.to_string_lossy())
+                );
+            }
+            body.push_str("<ul class=\"cards\">\n");
+            for (page, title) in here {
+                let below = page
+                    .strip_prefix(path)
+                    .unwrap_or(page)
+                    .with_extension("html");
+                let about = pages
+                    .summary(page)
+                    .map(|s| format!("<span>{}</span>", Self::escape(s)))
+                    .unwrap_or_default();
+                let _ = writeln!(
+                    body,
+                    "<li><a href=\"{}\"><strong>{}</strong>{about}</a></li>",
+                    Self::link(&below),
                     Self::escape(title)
-                )
-            }))
-            .collect();
-        let body = format!(
-            "<h1>{}</h1>\n<ul class=\"listing\">\n{items}</ul>\n",
-            Self::escape(&name)
-        );
+                );
+            }
+            body.push_str("</ul>\n");
+        }
+        if body.ends_with("</h1>\n") {
+            body.push_str("<p class=\"muted\">No pages here yet.</p>\n");
+        }
         let nav = Nav {
             pages,
             current: path,
@@ -693,6 +705,14 @@ impl Builder {
             graph: None,
         };
         shell.page(path, "", &name, &body, &nav)
+    }
+
+    /// A path below a folder, as a link from it: each of its parts as `href` makes it.
+    fn link(path: &Path) -> String {
+        path.iter()
+            .map(|part| Self::href(&part.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     /// A page's path in the site, as a link from its top: `arch/README.html`.
