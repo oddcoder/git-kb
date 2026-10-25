@@ -1937,6 +1937,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_page_where_comments_are_written_can_be_handed_to_an_ai_to_review() {
+        let git = commented("First");
+        let site = Site::of(git.top().join("docs"));
+        let page = site.get("/docs/a.html").await.2;
+        assert!(
+            page.contains("popovertarget=\"ask-ai\">🤖 Review with AI</button>")
+                && page.contains("{origin}/_ai/page?path=/a.md"),
+            "{page}"
+        );
+        let at = site.get("/ref/main/a.html").await.2;
+        assert!(
+            !at.contains("ask-ai"),
+            "not at a commit, where comments are only shown: {at}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_thread_is_begun_on_words_chosen_on_its_page() {
         let git = commented("First");
         let site = Site::of(git.top().join("docs"));

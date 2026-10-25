@@ -114,8 +114,45 @@ impl Shell {
     }
 
     /// Whether comments are written here: on the folder as it is, served; not at a commit, nor built.
-    fn writes(&self) -> bool {
+    pub(super) fn writes(&self) -> bool {
         self.links == Links::Served && self.revision.is_none()
+    }
+
+    /// Where comments are written, the button in the line under a page's title that opens a card handing the page
+    /// to an AI to review: a prompt to paste into one, naming this server's API for AI reviewers and the page,
+    /// which web/src/comments.ts completes with the address the page was opened at, and copies.
+    #[must_use]
+    pub fn ask_ai(&self, page: &Path) -> (String, String) {
+        if !self.writes() {
+            return (String::new(), String::new());
+        }
+        let prompt = format!(
+            concat!(
+                "Please review a page of our docs, which a local server shows and takes comments on.\n\n",
+                "1. Read the guide to its API for AI reviewers: {{origin}}/_ai\n",
+                "2. Read the page, with its numbered lines and the comments already on it: {{origin}}/_ai/page?path=/{path}\n",
+                "3. Review it. For each real problem, POST a comment to {{origin}}/_ai/threads, quoting the exact words it is about: ",
+                "a concern for anything wrong, risky, contradictory or missing; a question for anything unclear; a suggestion for a ",
+                "change, with the wording. Name yourself, and your model, in \"agent\". One point a comment. Do not repeat what is ",
+                "already raised: reply to that thread instead.\n",
+                "4. When you are done, list the comments you left."
+            ),
+            path = Self::encode(page)
+        );
+        let card = format!(
+            concat!(
+                "<div class=\"pop ask-ai\" id=\"ask-ai\" popover><h3>Review with AI</h3>",
+                "<p class=\"muted\">Paste this into an AI assistant that can make web requests. Its comments show here, marked 🤖 AI.</p>",
+                "<textarea readonly rows=\"12\" class=\"ai-prompt\">{}</textarea>",
+                "<p class=\"actions\"><a href=\"/_ai\" target=\"_blank\">The API guide</a>",
+                "<button type=\"button\" class=\"copy-prompt\">Copy</button></p></div>\n"
+            ),
+            Self::escape(&prompt)
+        );
+        let button =
+            "<button type=\"button\" class=\"ask-ai-open\" popovertarget=\"ask-ai\">🤖 Review with AI</button>"
+                .to_string();
+        (button, card)
     }
 
     /// Where a page is served, from the server's top, for a form to come back to.

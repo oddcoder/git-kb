@@ -409,6 +409,20 @@ function arrive(): void {
     match();
   });
 }
+// Review with AI: the prompt names this server by the address the page was opened at, and Copy copies it.
+function namedServer(): void {
+  for (const box of $$<HTMLTextAreaElement>('.ai-prompt')) box.value = box.value.replaceAll('{origin}', location.origin);
+}
+document.addEventListener('click', async (e) => {
+  const button = e.target instanceof Element ? e.target.closest<HTMLButtonElement>('.copy-prompt') : null;
+  const box = button?.closest('.ask-ai')?.querySelector<HTMLTextAreaElement>('.ai-prompt');
+  if (!button || !box) return;
+  try { await navigator.clipboard.writeText(box.value); } catch { box.select(); document.execCommand('copy'); }
+  button.textContent = 'Copied';
+  setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+});
+document.addEventListener('DOMContentLoaded', namedServer);
+document.addEventListener('kb-refresh', namedServer);
 document.addEventListener('DOMContentLoaded', hook);
 addEventListener('load', arrive);
 document.addEventListener('kb-refresh', hook);

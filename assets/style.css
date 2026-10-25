@@ -567,3 +567,19 @@ html:has(#show-resolved:checked) .thread.resolved, html:has(#show-resolved:check
 .kind-question { background: var(--ink-control); }
 .kind-suggestion { background: var(--ink-compute); }
 .kind-note { background: var(--ink-gray); }
+
+/* Review with AI: the button in the line under a page's title, and the card with the prompt to copy. */
+.ask-ai-open { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-decoration: underline;
+               text-decoration-color: var(--line); cursor: pointer; }
+.ask-ai-open:hover { color: var(--accent); }
+.pop.ask-ai { width: min(560px, 92vw); padding: 12px 14px; font-size: 13px; }
+.ask-ai h3 { margin: 0 0 4px; font-size: 14px; }
+.ask-ai .ai-prompt { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--subtle);
+                     color: var(--text); font: 12px/1.5 var(--code-font, ui-monospace, monospace); resize: vertical; }
+.ask-ai .actions { display: flex; align-items: center; gap: 10px; margin: 8px 0 0; }
+.ask-ai .copy-prompt { margin-left: auto; padding: 3px 12px; border: 1px solid var(--accent); border-radius: 6px;
+                       background: var(--accent); color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+@supports (anchor-name: --a) {
+  .ask-ai-open { anchor-name: --ask; }
+  .pop.ask-ai { margin-top: 4px; position-anchor: --ask; position-area: bottom span-right; }
+}

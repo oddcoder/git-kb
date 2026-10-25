@@ -152,10 +152,14 @@ impl Shell {
                 self.to(at, &Self::encode(page))
             ));
         }
+        let (ask, card) = self.ask_ai(page);
+        if !ask.is_empty() {
+            parts.push(ask);
+        }
         if parts.is_empty() {
             return String::new();
         }
-        format!("<p class=\"meta\">{}</p>\n", parts.join(" · "))
+        format!("<p class=\"meta\">{}</p>\n{card}", parts.join(" · "))
     }
 
     /// A page's history, as a page of its own: the commits that changed it, newest first, each a link to the
