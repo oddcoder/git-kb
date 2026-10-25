@@ -45,14 +45,6 @@ pub enum Command {
         #[arg(long = "in", default_value = ".")]
         folder: PathBuf,
     },
-    /// Say what in the pages' front matter cannot be made sense of: unknown doctypes or statuses, shared numbers,
-    /// replaced pages and cited sources that are not there. Fails when it finds any
-    #[command(display_name = "git-kb")]
-    Check {
-        /// A folder to find git-kb.toml from, which says what to check; or, without one, the folder to check
-        #[arg(default_value = ".")]
-        folder: PathBuf,
-    },
     /// List the built-in plugins, and the ones git-kb.toml uses
     #[command(display_name = "git-kb")]
     Plugins {

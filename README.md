@@ -97,23 +97,37 @@ doctype: design
 number: 12
 status: review
 authors: [Ada, Grace]
+replaces: designs/old-tiling.md
 ---
 # Cache tiling
 ```
 
-`git-kb.toml` declares the doctypes, by the id pages name them by. Each page of one shows, under its title, its doctype and number (Design-12), its status and the fields its doctype lists. Each doctype has a page listing its pages, which the site's contents link to.
+`git-kb.toml` declares each doctype, by the id pages name it by, with a schema for its pages' front matter. The schema is JSON Schema, written in TOML, so types nest as deep as they need to.
 
 ```toml
 [doctypes.design]
 name = "Design"                   # shown with a page's number: Design-12
 template = "templates/design.md"  # what git kb new writes
-statuses = ["draft", "review", "accepted", "rejected"]
-fields = ["status", "authors"]    # shown under a page's title, in this order
+
+[doctypes.design.schema]
+type = "object"
+required = ["status", "authors"]
+properties.status = { enum = ["draft", "review", "accepted", "rejected"] }
+properties.authors = { type = "array", items = { type = "string" } }
+properties.replaces = { type = "string", x-kb = "page" }
 ```
 
-A doctype with `citations = true` cites its pages' sources: `[@kung1982]`, or `[@a; @b]`, becomes a numbered link to the source of that key under `sources:` in the page's front matter, and the sources cited are listed, in that order, at the page's end. A page that another's `replaces:` names says what replaces it; beside a page's status, it says since when, by whom, in which commit.
+Each value is shown by what its schema says it is:
+- one of an `enum` as a badge;
+- a list as its items;
+- a list of records as a table;
+- a record as its fields.
 
-`git kb check` says what in the pages' front matter git-kb cannot make sense of: a doctype or status `git-kb.toml` does not have, a number two pages of a doctype share, a `replaces:` that names no page, a citation with no source. It fails when it finds any, for CI; pages are shown regardless.
+Pointed at, a field says which commit last set it. git-kb adds two kinds of its own, with `x-kb`:
+- `page`: the value names a page of the site, by its path or its title. It links there, and that page says so ("Design-12 replaces this").
+- `reference`: a source, under its key, which the page's text cites as `[@key]` or `[@a; @b]`. Citations are numbered by first use, and the sources are listed at the page's end.
+
+The server checks each page against its schema, formats and patterns too. It shows what is wrong under the page's title, in its doctype's list, and on `/_problems`. Each doctype has a page listing its pages, with a choice of which values of each `enum` to show. The site's contents link to each.
 
 `git kb new design "Cache tiling" --in docs/designs` writes `docs/designs/cache-tiling.md` from the template. It fills in `{title}`, `{number}` (the doctype's next), `{date}` and `{author}` (from git), and commits nothing.
 

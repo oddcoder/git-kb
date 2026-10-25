@@ -3,16 +3,16 @@
 //! in; and the page itself, in a column narrow enough to read, styled by `assets/style.css`. A built site and a
 //! served one look the same; only their links differ, as a built site's must work from disk.
 
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use pulldown_cmark::HeadingLevel;
 
 use crate::build::Builder;
-use crate::config::{DoctypeConfig, LookConfig};
+use crate::config::LookConfig;
 use crate::git::Revision;
 use crate::nav::Nav;
+use crate::schema::Doctypes;
 
 mod comments;
 mod compare;
@@ -24,6 +24,7 @@ mod search;
 
 pub use comments::Notes;
 pub use compare::{Comparison, Version};
+pub use doc::Setters;
 pub use history::{PageHistory, PageState};
 pub use margin::Margin;
 
@@ -81,7 +82,7 @@ pub enum Links {
 }
 
 /// The page around a site's pages.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Shell {
     /// The site's name, in its bar.
     name: String,
@@ -100,7 +101,7 @@ pub struct Shell {
     /// What the search box says: what was searched for, on the page of what it found.
     query: String,
     /// The doctypes pages may be, by id, for what their front matter says.
-    doctypes: BTreeMap<String, DoctypeConfig>,
+    doctypes: Doctypes,
 }
 
 impl Shell {
@@ -115,7 +116,7 @@ impl Shell {
             place: PathBuf::from("docs"),
             revisions: false,
             query: String::new(),
-            doctypes: BTreeMap::new(),
+            doctypes: Doctypes::default(),
         }
     }
 
@@ -178,7 +179,7 @@ impl Shell {
 
     /// The same, with these doctypes for its pages.
     #[must_use]
-    pub fn typing(self, doctypes: BTreeMap<String, DoctypeConfig>) -> Self {
+    pub fn typing(self, doctypes: Doctypes) -> Self {
         Self { doctypes, ..self }
     }
 

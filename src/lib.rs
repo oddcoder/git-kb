@@ -2,7 +2,6 @@
 
 pub mod ai;
 pub mod build;
-pub mod check;
 pub mod cli;
 pub mod comments;
 pub mod config;
@@ -15,6 +14,7 @@ pub mod nav;
 pub mod new;
 pub mod plugins;
 pub mod render;
+pub mod schema;
 pub mod search;
 pub mod serve;
 pub mod shell;

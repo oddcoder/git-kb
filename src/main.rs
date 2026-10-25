@@ -5,7 +5,6 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use git_kb::build::Builder;
-use git_kb::check::check;
 use git_kb::cli::{Cli, Command};
 use git_kb::config::Config;
 use git_kb::git::{Repo, When};
@@ -32,7 +31,6 @@ fn main() -> ExitCode {
         Command::Serve { folder }
         | Command::Build { folder }
         | Command::Plugins { folder }
-        | Command::Check { folder }
         | Command::New { folder, .. } => folder.clone(),
     };
     if !folder.is_dir() {
@@ -74,7 +72,7 @@ fn main() -> ExitCode {
                     runtime.block_on(
                         Server::new(config.root.clone(), config.title.clone())
                             .looking(config.look.clone())
-                            .typing(config.doctypes.clone())
+                            .typing(git_kb::schema::doctypes(&config.doctypes))
                             .commenting(&config.comments)
                             .syncing(config.serve.sync_every)
                             .run(address, async {
@@ -95,7 +93,7 @@ fn main() -> ExitCode {
             let out = &config.build.out;
             let builder = Builder::new(config.title.clone(), config.url.clone())
                 .looking(config.look.clone())
-                .typing(config.doctypes.clone())
+                .typing(git_kb::schema::doctypes(&config.doctypes))
                 .commenting(config.comments.clone());
             match builder.build(&config.root, out) {
                 Ok(built) => {
@@ -109,7 +107,6 @@ fn main() -> ExitCode {
             }
         }
         Command::Plugins { .. } => list_plugins(),
-        Command::Check { .. } => return check_pages(&config),
         Command::New {
             doctype,
             title,
@@ -117,26 +114,6 @@ fn main() -> ExitCode {
         } => return write_new(&config, &doctype, &title, &folder),
     }
     ExitCode::SUCCESS
-}
-
-/// Says each problem with the pages' front matter, one a line; fails when there are any.
-fn check_pages(config: &Config) -> ExitCode {
-    match check(config) {
-        Ok(problems) if problems.is_empty() => {
-            info!("nothing to say");
-            ExitCode::SUCCESS
-        }
-        Ok(problems) => {
-            for p in &problems {
-                println!("{}: {}", p.page.display(), p.said);
-            }
-            ExitCode::FAILURE
-        }
-        Err(e) => {
-            error!("{e:#}");
-            ExitCode::FAILURE
-        }
-    }
 }
 
 /// A new page of a doctype, from its template, in a folder of the site; and says where.

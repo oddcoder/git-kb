@@ -17,7 +17,6 @@
 //! pages' style sheet and scripts under `/_assets/`, and `/_events`. Open pages load again when the site changes:
 //! the server tells them, as events from `/_events`, and a line of script in each page, the shell's, reloads it.
 
-use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -43,14 +42,14 @@ mod agents;
 
 use crate::build::Builder;
 use crate::comments::{Begin, Snippet, Store};
-use crate::config::{CommentsConfig, DoctypeConfig, LookConfig};
+use crate::config::{CommentsConfig, LookConfig};
 use crate::diff::Diff;
-use crate::front::Front;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
 use crate::live::{Change, Live};
 use crate::nav::{Nav, Pages};
 use crate::render::{Opts, Renderer};
+use crate::schema::Doctypes;
 use crate::shell::{self, Comparison, Links, Margin, Notes, PageHistory, Shell, Version};
 
 /// Serves a folder of Markdown.
@@ -132,7 +131,7 @@ impl Server {
 
     /// The same, with these doctypes for its pages.
     #[must_use]
-    pub fn typing(self, doctypes: BTreeMap<String, DoctypeConfig>) -> Self {
+    pub fn typing(self, doctypes: Doctypes) -> Self {
         Self {
             shell: self.shell.typing(doctypes),
             ..self
@@ -262,6 +261,9 @@ impl Server {
         }
         if path == "/_graph" {
             return self.graph_page(query.unwrap_or(""));
+        }
+        if path == "/_problems" {
+            return self.problems_page(query.unwrap_or(""));
         }
         if let Some(id) = path.strip_prefix("/_doctypes/") {
             return self.doctype_page(id, query.unwrap_or(""));
@@ -571,6 +573,24 @@ impl Server {
         Html(view.shell.page(Path::new(""), "", "Graph", &body, &nav)).into_response()
     }
 
+    /// Every page whose front matter is not as its doctype's schema says: in the folder as it is, or at the commit
+    /// `ref` names.
+    fn problems_page(&self, query: &str) -> Response {
+        let view = match self.view_of(query) {
+            Ok(view) => view,
+            Err(answer) => return *answer,
+        };
+        let pages = view.pages();
+        let body = view.shell.problems_page(Path::new(""), &pages);
+        let nav = Nav {
+            pages: &pages,
+            current: Path::new(""),
+            headings: &[],
+            graph: None,
+        };
+        Html(view.shell.page(Path::new(""), "", "Problems", &body, &nav)).into_response()
+    }
+
     /// A doctype's list of pages: in the folder as it is, or at the commit `ref` names.
     fn doctype_page(&self, id: &str, query: &str) -> Response {
         let view = match self.view_of(query) {
@@ -867,9 +887,13 @@ impl View<'_> {
             at,
             file,
             &page,
-            &self
-                .page_history(file, &bytes)
-                .with_status(self.status_change(file, &text, &bytes)),
+            &self.page_history(file, &bytes).with_setters(
+                &text,
+                pages.front(file),
+                self.blame_of(file, &bytes)
+                    .as_deref()
+                    .map_or(&[][..], Vec::as_slice),
+            ),
             &pages,
         );
         let body = Shell::with_source(&body, &self.server.renderer.source(&text));
@@ -1067,12 +1091,12 @@ impl View<'_> {
     }
 
     /// Where a page, of these bytes, stands against the last commit, and the commits that changed it.
-    /// The commit that last changed a page's status, in its front matter, if it has one, committed.
-    fn status_change(&self, file: &Path, text: &str, bytes: &[u8]) -> Option<crate::git::Change> {
-        let line = Front::line_of(text, "status")?;
+    /// Who last changed each line of a page, at the commit shown, or, for the folder as it is, on disk.
+    fn blame_of(&self, file: &Path, bytes: &[u8]) -> Option<Arc<crate::git::Blame>> {
         let repo = self.server.repo.as_ref()?;
         let at = self.snapshot.as_ref().or(self.head.as_ref())?;
-        repo.line_change(at, file, self.snapshot.is_none().then_some(bytes), line)
+        repo.blame(at, file, self.snapshot.is_none().then_some(bytes))
+            .ok()
     }
 
     fn page_history(&self, file: &Path, bytes: &[u8]) -> PageHistory<'_> {
@@ -2174,29 +2198,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_page_s_status_says_since_when_by_the_commit_that_set_it() {
+    async fn each_field_says_which_commit_last_set_it() {
         let git = crate::git::tests::Git::new();
-        git.write(
-            "docs/d.md",
-            "---\ndoctype: design\nstatus: draft\n---\n# D\n\nBody.\n",
-        );
+        let page = |status: &str, body: &str| {
+            format!("---\ndoctype: design\nstatus: {status}\nauthors: [Ada]\n---\n# D\n\n{body}\n")
+        };
+        git.write("docs/d.md", &page("draft", "Body."));
         git.commit("Draft a design");
-        git.write(
-            "docs/d.md",
-            "---\ndoctype: design\nstatus: review\n---\n# D\n\nBody.\n",
-        );
+        git.write("docs/d.md", &page("review", "Body."));
         git.commit("Put it up for review");
-        git.write(
-            "docs/d.md",
-            "---\ndoctype: design\nstatus: review\n---\n# D\n\nBody, edited.\n",
-        );
+        git.write("docs/d.md", &page("review", "Body, edited."));
         git.commit("Edit the body");
-        let page = Site::of(git.top().join("docs")).get("/docs/d.html").await.2;
-        let since = &page[page.find("class=\"since\"").expect("a since")..];
+        let html = Site::of(git.top().join("docs")).get("/docs/d.html").await.2;
+        let field = |label: &str| {
+            let at = html
+                .find(&format!("<span class=\"label\">{label}</span>"))
+                .expect(label);
+            html[..at]
+                .rsplit("<span class=\"field\"")
+                .next()
+                .unwrap()
+                .to_string()
+        };
         assert!(
-            since.contains("title=\"Put it up for review\""),
-            "the commit that set the status, not the last one: {since}"
+            field("Status").contains(": Put it up for review\""),
+            "the commit that set it, not the last: {html}"
         );
+        assert!(field("Authors").contains(": Draft a design\""), "{html}");
     }
 
     #[tokio::test]

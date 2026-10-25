@@ -10,7 +10,7 @@ use crate::graph::Graph;
 use crate::render::{Heading, Renderer};
 
 /// Every page of a site, by its path from the site's top, with its title.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Pages {
     titles: BTreeMap<PathBuf, String>,
     /// What each page is about, for a card of it, if it says, by `Renderer::summary`.
@@ -146,23 +146,9 @@ impl Pages {
         found
     }
 
-    /// The pages that say they replace a page, by its path or its title, in their front matter's `replaces`;
-    /// each with its title.
-    #[must_use]
-    pub fn replacing(&self, page: &Path) -> Vec<(&Path, &str)> {
-        self.fronts
-            .iter()
-            .filter(|(other, front)| {
-                other.as_path() != page
-                    && front.text("replaces").and_then(|r| self.named(r)) == Some(page)
-            })
-            .map(|(other, _)| {
-                (
-                    other.as_path(),
-                    self.titles.get(other).map_or("", String::as_str),
-                )
-            })
-            .collect()
+    /// Every page with front matter, with it.
+    pub fn fronts(&self) -> impl Iterator<Item = (&Path, &Front)> {
+        self.fronts.iter().map(|(p, f)| (p.as_path(), f))
     }
 
     /// What a page is about, if it says.

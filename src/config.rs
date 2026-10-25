@@ -28,9 +28,11 @@
 //! [doctypes.design]      # a doctype, by the id a page's front matter names it by: doctype: design
 //! name = "Design"        # as it is shown, with a page's number: Design-12; its id's by default
 //! template = "templates/design.md"  # the page `git kb new design` writes; none by default
-//! statuses = ["draft", "review", "accepted"]  # the statuses a page of it may have; any by default
-//! fields = ["status", "authors"]  # the front matter shown under a page's title, in this order
-//! citations = true       # [@key] in a page cites its sources: as numbered references; false by default
+//! [doctypes.design.schema]  # what its pages' front matter may be, as JSON Schema; see schema.rs
+//! type = "object"
+//! required = ["status"]
+//! properties.status = { enum = ["draft", "review", "accepted"] }
+//! properties.replaces = { type = "string", x-kb = "page" }
 //!
 //! [look]                 # how the pages look until a reader chooses in the Aa menu; web/src/look.ts's
 //! scheme = "auto"        # light, dark, or auto, as the reader's system is
@@ -92,19 +94,15 @@ impl Default for Config {
 }
 
 /// A doctype: what a page is, as its front matter says, as a design or a guide. Each counts its own numbers.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct DoctypeConfig {
     /// As it is shown, as `Design`; its id when none is given.
     pub name: Option<String>,
     /// The page `git kb new` writes, a full path once read.
     pub template: Option<PathBuf>,
-    /// The statuses its pages may have; any, when none are given.
-    pub statuses: Vec<String>,
-    /// The fields of its pages' front matter shown under their titles, in this order.
-    pub fields: Vec<String>,
-    /// Whether its pages cite their sources, by `[@key]`.
-    pub citations: bool,
+    /// What its pages' front matter may be, as JSON Schema; anything, when none is given.
+    pub schema: serde_json::Value,
 }
 
 /// Where the review comments are kept.
@@ -328,22 +326,30 @@ mod tests {
     }
 
     #[test]
-    fn doctypes_are_read_with_their_templates_from_the_file_s_folder() {
+    fn doctypes_are_read_with_their_templates_from_the_file_s_folder_and_their_schemas() {
         let tree = Tree::with(&[(
             "git-kb.toml",
-            "[doctypes.design]\nname = \"Design\"\ntemplate = \"templates/design.md\"\nstatuses = [\"draft\", \"accepted\"]\nfields = [\"status\"]\n[doctypes.guide]\n",
+            "[doctypes.design]\nname = \"Design\"\ntemplate = \"templates/design.md\"\n[doctypes.design.schema]\ntype = \"object\"\nproperties.status = { enum = [\"draft\", \"accepted\"] }\nproperties.authors = { type = \"array\" }\n[doctypes.guide]\n",
         )]);
         let (config, _) = Config::find(&tree.path("")).unwrap();
+        let design = &config.doctypes["design"];
         assert_eq!(
-            config.doctypes["design"],
-            DoctypeConfig {
-                name: Some("Design".into()),
-                template: Some(tree.path("templates/design.md")),
-                statuses: vec!["draft".into(), "accepted".into()],
-                fields: vec!["status".into()],
-                citations: false,
-            }
+            (design.name.as_deref(), design.template.as_deref()),
+            (
+                Some("Design"),
+                Some(tree.path("templates/design.md").as_path())
+            )
         );
+        assert_eq!(
+            design.schema,
+            serde_json::json!({ "type": "object", "properties": { "status": { "enum": ["draft", "accepted"] }, "authors": { "type": "array" } } })
+        );
+        let keys: Vec<&String> = design.schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect();
+        assert_eq!(keys, ["status", "authors"], "in the order written");
         assert_eq!(config.doctypes["guide"], DoctypeConfig::default());
     }
 

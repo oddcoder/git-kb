@@ -6,7 +6,9 @@
 use std::fmt::Write;
 use std::path::Path;
 
+use super::Setters;
 use super::{Links, Shell};
+use crate::front::Front;
 use crate::git::{Change, History, Revision, Snapshot, When};
 use crate::nav::Pages;
 use crate::render::Page as Rendered;
@@ -27,8 +29,8 @@ pub enum PageState {
 pub struct PageHistory<'a> {
     pub state: PageState,
     pub changes: Vec<&'a Change>,
-    /// The commit that last changed its status, in its front matter; none if it has none, or it is not committed.
-    pub status: Option<Change>,
+    /// The commit that last set each field of its front matter, for those committed.
+    pub setters: Setters,
 }
 
 impl<'a> PageHistory<'a> {
@@ -49,14 +51,31 @@ impl<'a> PageHistory<'a> {
         Self {
             state,
             changes: history.iter().flat_map(|h| h.of(page)).collect(),
-            status: None,
+            setters: Setters::new(),
         }
     }
 
-    /// The same, with the commit that last changed its status.
+    /// The same, with the commit that last set each field of its front matter: of the lines that give it, the
+    /// one changed last, as `blame` says of each line.
     #[must_use]
-    pub fn with_status(self, status: Option<Change>) -> Self {
-        Self { status, ..self }
+    pub fn with_setters(
+        self,
+        markdown: &str,
+        front: Option<&Front>,
+        blame: &[Option<Change>],
+    ) -> Self {
+        let mut setters = Setters::new();
+        for name in front.iter().flat_map(|f| f.fields.keys()) {
+            let last = Front::lines_of(markdown, name)
+                .into_iter()
+                .flatten()
+                .filter_map(|line| blame.get(line)?.as_ref())
+                .max_by_key(|c| c.time);
+            if let Some(change) = last {
+                setters.insert(name.clone(), change.clone());
+            }
+        }
+        Self { setters, ..self }
     }
 }
 
@@ -71,7 +90,7 @@ impl Shell {
         history: &PageHistory,
         pages: &Pages,
     ) -> String {
-        let head = self.doc_head(at, page, pages, history.status.as_ref());
+        let head = self.doc_head(at, page, pages, &history.setters);
         let meta = self.meta(at, page, history);
         let (title, rest) = rendered.html.split_at(rendered.title_end);
         let rest = self.cited(rest, pages.front(page));

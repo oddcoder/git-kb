@@ -24,13 +24,13 @@ use ignore::WalkBuilder;
 use tracing::{debug, warn};
 
 use crate::comments::Store;
-use crate::config::{CommentsConfig, DoctypeConfig, LookConfig};
+use crate::config::{CommentsConfig, LookConfig};
 use crate::diff::Diff;
-use crate::front::Front;
 use crate::git::{History, Repo, Snapshot};
 use crate::graph::Graph;
 use crate::nav::{Nav, Pages};
 use crate::render::{Opts, Renderer};
+use crate::schema::Doctypes;
 use crate::shell::{
     self, Comparison, Links, Margin, Notes, PageHistory, PageState, Shell, Version,
 };
@@ -101,7 +101,7 @@ pub struct Builder {
     look: LookConfig,
     comments: CommentsConfig,
     /// The doctypes its pages may be.
-    doctypes: BTreeMap<String, DoctypeConfig>,
+    doctypes: Doctypes,
 }
 
 impl Builder {
@@ -121,7 +121,7 @@ impl Builder {
             url,
             look: LookConfig::default(),
             comments: CommentsConfig::default(),
-            doctypes: BTreeMap::new(),
+            doctypes: Doctypes::default(),
         }
     }
 
@@ -139,7 +139,7 @@ impl Builder {
 
     /// The same, with these doctypes for its pages.
     #[must_use]
-    pub fn typing(self, doctypes: BTreeMap<String, DoctypeConfig>) -> Self {
+    pub fn typing(self, doctypes: Doctypes) -> Self {
         Self { doctypes, ..self }
     }
 
@@ -285,7 +285,13 @@ impl Builder {
                     path,
                     &bytes,
                 )
-                .with_status(past.and_then(|p| Self::status_change(p, path, &text)));
+                .with_setters(
+                    &text,
+                    pages.front(path),
+                    past.and_then(|p| Self::blame_of(p, path, &text))
+                        .as_deref()
+                        .map_or(&[][..], Vec::as_slice),
+                );
                 let within = Within {
                     shell,
                     files,
@@ -634,11 +640,10 @@ impl Builder {
         }
     }
 
-    /// The commit that last changed a page's status, in its front matter, if it has one, committed.
-    fn status_change(past: &Past, path: &Path, text: &str) -> Option<crate::git::Change> {
-        let line = Front::line_of(text, "status")?;
+    /// Who last changed each line of a page, as it is built.
+    fn blame_of(past: &Past, path: &Path, text: &str) -> Option<Arc<crate::git::Blame>> {
         let now = past.head.is_some().then_some(text.as_bytes());
-        past.repo.line_change(&past.at, path, now, line)
+        past.repo.blame(&past.at, path, now).ok()
     }
 
     /// A site's pages of its own: the graph of every page and link, and each doctype's list of pages.

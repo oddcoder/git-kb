@@ -109,30 +109,56 @@ ul.results { padding-left: 0; list-style: none; }
 .results small, .muted { color: var(--muted); }
 
 /* A page's history: the line under its title, and the lists of commits. */
-/* What a page is, under its title, from its front matter, as src/shell/doc.rs writes it: its doctype and number, its
-   status, coloured by what it usually means, and its doctype's fields. */
+/* What a page is, under its title, from its front matter, as src/shell/doc.rs writes it: its doctype and number,
+   and each field by its kind; one of a few values as a badge, coloured by what the word usually means; a list of
+   records as a table. Pointed at, a field says who set it. What its schema finds wrong is said under them. */
 .doc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: -4px 0 6px; font-size: 13px; }
 .doc-head .doctype { padding: 1px 8px; border-radius: 6px; background: var(--subtle); border: 1px solid var(--line);
                      font-weight: 600; letter-spacing: 0.02em; }
-.doc-head .status { padding: 1px 8px; border-radius: 999px; font-weight: 600; text-transform: capitalize;
-                    background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--text); }
-:is(.doc-head, .doc-list) .status.status-review, :is(.doc-head, .doc-list) .status.status-running { background: color-mix(in srgb, #d4a72c 30%, transparent); }
-:is(.doc-head, .doc-list) .status.status-accepted, :is(.doc-head, .doc-list) .status.status-done, :is(.doc-head, .doc-list) .status.status-final, :is(.doc-head, .doc-list) .status.status-published, :is(.doc-head, .doc-list) .status.status-released { background: color-mix(in srgb, #2da44e 28%, transparent); }
-:is(.doc-head, .doc-list) .status.status-rejected { background: color-mix(in srgb, #cf222e 26%, transparent); }
-:is(.doc-head, .doc-list) .status.status-replaced { color: var(--muted); text-decoration: line-through; }
-:is(.doc-head, .doc-list) .status.status-planned { background: color-mix(in srgb, var(--accent) 22%, transparent); }
-.doc-head .unknown, .doc-head .doctype[title] { border: 1px dashed var(--muted); }
-.doc-head .label { color: var(--muted); }
-.doc-head .since { margin-left: -8px; color: var(--muted); }
-.doc-head .since a { color: inherit; text-decoration: underline; text-decoration-color: var(--line); }
-.doc-head.unread { color: light-dark(#a8432f, #d9826f); cursor: help; }
+a.doctype { color: var(--text); text-decoration: none; }
+a.doctype:hover { border-color: var(--accent); }
+.doc-head .doctype[title] { border-style: dashed; }
+.doc-head .field[title] { cursor: help; }
+.doc-head .label, .doc-table + .meta .label { color: var(--muted); }
+.badge { padding: 1px 8px; border-radius: 999px; font-weight: 600; text-transform: capitalize;
+         background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--text); }
+.badge.v-review, .badge.v-running { background: color-mix(in srgb, #d4a72c 30%, transparent); }
+.badge.v-accepted, .badge.v-done, .badge.v-final, .badge.v-published, .badge.v-released, .badge.v-approved {
+  background: color-mix(in srgb, #2da44e 28%, transparent); }
+.badge.v-rejected, .badge.v-shelved { background: color-mix(in srgb, #cf222e 26%, transparent); }
+.badge.v-replaced { color: var(--muted); text-decoration: line-through; }
+.badge.v-planned, .badge.v-public { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.cards .doc-head { margin: 0; font-style: normal; font-size: 12px; gap: 6px; }
+.doc-table { margin: 2px 0 12px; font-size: 14px; }
+.problems { margin: 6px 0 10px; padding: 6px 12px; border-left: 3px solid #d4a72c; border-radius: 4px;
+            background: color-mix(in srgb, #d4a72c 12%, transparent); font-size: 14px; }
+.problems p { margin: 2px 0; }
+.named-by { margin: -4px 0 8px; padding: 6px 12px; border-left: 3px solid var(--accent); border-radius: 4px;
+            background: color-mix(in srgb, var(--accent) 10%, transparent); font-size: 14px; }
+.named-by p { margin: 2px 0; }
+.named-by a { font-weight: 600; }
+.problem-flag { color: light-dark(#9a6700, #d4a72c); cursor: help; white-space: nowrap; }
+.problem-list { padding: 0; list-style: none; }
+.problem-list li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.problem-list p { margin: 4px 0 0; font-size: 14px; }
+/* A doctype's list of its pages, and, for each field that is one of a few values, the choice of which to show; and,
+   atop the site's contents, a link to each doctype's list. */
+.doc-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 6px 0; font-size: 14px; }
+.doc-filter .label { min-width: 70px; color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; }
+.doc-filter label { cursor: pointer; text-transform: capitalize; }
+.doc-list { width: 100%; border-collapse: collapse; font-size: 15px; }
+.doc-list th, .doc-list td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.doc-list th { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.doc-list td:first-child { white-space: nowrap; color: var(--muted); }
+.doc-list .badge { font-size: 13px; }
+.doctypes { display: flex; flex-wrap: wrap; gap: 8px; }
+.doctypes a { padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--text); }
+.doctypes a:hover { border-color: var(--accent); text-decoration: none; }
 /* A page's citations, as src/shell/doc.rs numbers them, and the list of its sources at its end. */
 .cites { font-size: 0.75em; line-height: 0; }
 .cite.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashed; }
 .references ol { font-size: 14px; color: var(--muted); }
 .references li:target { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.replaced-by { margin: -4px 0 8px; padding: 6px 12px; border-left: 3px solid light-dark(#cf222e, #f85149);
-               border-radius: 4px; background: color-mix(in srgb, #cf222e 10%, transparent); font-size: 14px; }
 a.doctype { color: var(--text); text-decoration: none; }
 a.doctype:hover { border-color: var(--accent); }
 .cards .doc-head { margin: 0; font-style: normal; font-size: 12px; gap: 6px; }
