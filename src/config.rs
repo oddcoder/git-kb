@@ -25,6 +25,13 @@
 //! path = "tools/kb-graphviz"  # its options go in its table. See plugins.rs for what a plugin is.
 //!
 //!
+//! [doctypes.design]      # a doctype, by the id a page's front matter names it by: doctype: design
+//! name = "Design"        # as it is shown, with a page's number: Design-12; its id's by default
+//! template = "templates/design.md"  # the page `git kb new design` writes; none by default
+//! statuses = ["draft", "review", "accepted"]  # the statuses a page of it may have; any by default
+//! fields = ["status", "authors"]  # the front matter shown under a page's title, in this order
+//! citations = true       # [@key] in a page cites its sources: as numbered references; false by default
+//!
 //! [look]                 # how the pages look until a reader chooses in the Aa menu; web/src/look.ts's
 //! scheme = "auto"        # light, dark, or auto, as the reader's system is
 //! palette = "github"     # github, paper, solarized, nord or gruvbox
@@ -60,6 +67,8 @@ pub struct Config {
     pub look: LookConfig,
     /// Each plugin by name, with its options; a `path` names a plugin of the repository's own.
     pub plugins: BTreeMap<String, toml::Table>,
+    /// Each doctype by its id, as pages' front matter names it.
+    pub doctypes: BTreeMap<String, DoctypeConfig>,
     /// The folder the settings' paths are taken against: the file's, or the folder's when there is none.
     #[serde(skip)]
     pub base: PathBuf,
@@ -76,9 +85,26 @@ impl Default for Config {
             comments: CommentsConfig::default(),
             look: LookConfig::default(),
             plugins: BTreeMap::new(),
+            doctypes: BTreeMap::new(),
             base: PathBuf::new(),
         }
     }
+}
+
+/// A doctype: what a page is, as its front matter says, as a design or a guide. Each counts its own numbers.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct DoctypeConfig {
+    /// As it is shown, as `Design`; its id when none is given.
+    pub name: Option<String>,
+    /// The page `git kb new` writes, a full path once read.
+    pub template: Option<PathBuf>,
+    /// The statuses its pages may have; any, when none are given.
+    pub statuses: Vec<String>,
+    /// The fields of its pages' front matter shown under their titles, in this order.
+    pub fields: Vec<String>,
+    /// Whether its pages cite their sources, by `[@key]`.
+    pub citations: bool,
 }
 
 /// Where the review comments are kept.
@@ -231,6 +257,11 @@ impl Config {
         self.root = std::fs::canonicalize(&root)
             .with_context(|| format!("the root folder, {}", root.display()))?;
         self.build.out = base.join(&self.build.out);
+        for doctype in self.doctypes.values_mut() {
+            if let Some(template) = &mut doctype.template {
+                *template = base.join(&*template);
+            }
+        }
         Ok(())
     }
 }
@@ -294,6 +325,26 @@ mod tests {
             }
         );
         assert_eq!(config.build.out, tree.path("site"));
+    }
+
+    #[test]
+    fn doctypes_are_read_with_their_templates_from_the_file_s_folder() {
+        let tree = Tree::with(&[(
+            "git-kb.toml",
+            "[doctypes.design]\nname = \"Design\"\ntemplate = \"templates/design.md\"\nstatuses = [\"draft\", \"accepted\"]\nfields = [\"status\"]\n[doctypes.guide]\n",
+        )]);
+        let (config, _) = Config::find(&tree.path("")).unwrap();
+        assert_eq!(
+            config.doctypes["design"],
+            DoctypeConfig {
+                name: Some("Design".into()),
+                template: Some(tree.path("templates/design.md")),
+                statuses: vec!["draft".into(), "accepted".into()],
+                fields: vec!["status".into()],
+                citations: false,
+            }
+        );
+        assert_eq!(config.doctypes["guide"], DoctypeConfig::default());
     }
 
     #[test]
