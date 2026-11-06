@@ -110,8 +110,28 @@ async function refresh(): Promise<void> {
   swap(fresh);
 }
 
+// The page loaded again as a whole, once the reader is done, as the server is another version of git-kb, whose pages
+// and scripts may differ.
+function reload(): void {
+  if (busy()) setTimeout(reload, 1000);
+  else location.reload();
+}
+
 // Changes come in bursts, as a save writes a file twice or a commit moves several refs: one fetch once they settle.
-new EventSource('/_events').addEventListener('message', () => {
+const events = new EventSource('/_events');
+events.addEventListener('message', () => {
   clearTimeout(waiting);
   waiting = setTimeout(refresh, 300);
+});
+// The server says which version of git-kb it is each time the page connects. Connecting again, after it stopped, as it
+// does to update itself, the page loads again: as a whole if it came back as another version, or else fetched afresh,
+// for what changed while it was away.
+let version: string | undefined;
+events.addEventListener('version', (e) => {
+  const was = version;
+  version = e.data;
+  if (was === undefined) return;
+  clearTimeout(waiting);
+  if (was !== version) reload();
+  else waiting = setTimeout(refresh, 300);
 });

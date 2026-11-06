@@ -18,3 +18,4 @@ pub mod render;
 pub mod schema;
 pub mod serve;
 pub mod shell;
+pub mod update;

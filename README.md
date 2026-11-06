@@ -34,6 +34,8 @@ cargo install --locked --path .
 
 Either way, `cargo install` puts `git-kb` in `~/.cargo/bin`, which should be on your `PATH`. Because the binary is named `git-kb`, git also runs it as `git kb`.
 
+`git kb serve` keeps itself up to date. As it begins, and every hour after, it looks for a newer version where cargo installed it from: on crates.io, or, installed from git, in the `Cargo.toml` of the branch it came from, so that a commit that does not raise the version is not installed. If there is one, it installs it with cargo, as it was installed, while it serves. Once it is installed, by that or by hand, the server stops as at Ctrl-C and runs the new binary in its place, with the same arguments; open pages connect to it again and load again. `git config --global kb.autoupdate false` turns this off; without `--global`, for one repository; `git -c kb.autoupdate=false kb serve`, for one server. Installed from a path, a tag, a commit or with `--version`, git-kb is not looked for anew, but a binary installed over it is run. It does neither when cargo did not install it, as when run from `target/`, or on Windows, which does not let a running binary be replaced.
+
 ## Using
 
 Run it in the repository, or in any folder of Markdown:
@@ -217,4 +219,6 @@ node web/build.mjs web/dist   # the compiled scripts, which build.rs then copies
 cargo publish --allow-dirty  # web/dist/ is not in git, so cargo counts it as a change
 rm -r web/dist                # a checkout compiles them itself
 ```
+
+Each `git kb serve` installed from crates.io installs it within the hour, and restarts as it. One installed from git does so once the version in its branch's `Cargo.toml` is raised.
 

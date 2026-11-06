@@ -16,6 +16,8 @@
 //! git-kb's own files are beside the site, not in it, so that no page of the docs can be taken for one: the
 //! pages' style sheet and scripts under `/_assets/`, and `/_events`. Open pages load again when the site changes:
 //! the server tells them, as events from `/_events`, and a line of script in each page, the shell's, reloads it.
+//! Each time a page connects, the server first says its version, so that a page connecting again after it restarted
+//! as a newer one, as it does to update itself, loads again as a whole.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -253,6 +255,10 @@ impl Server {
 
     /// The site's changes, as events, one each, for as long as the page listens, or until the server stops.
     fn events(&self) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>> + use<>> {
+        // First, which git-kb this is: a page connecting again knows by it whether the server came back as another.
+        let version = tokio_stream::once(Some(Ok(Event::default()
+            .event("version")
+            .data(env!("CARGO_PKG_VERSION")))));
         let changes = BroadcastStream::new(self.changes.subscribe()).filter_map(|change| {
             change
                 .ok()
@@ -260,8 +266,8 @@ impl Server {
         });
         let stopped = WatchStream::new(self.stopping.subscribe())
             .filter_map(|stopping| stopping.then_some(None));
-        let events = changes
-            .merge(stopped)
+        let events = version
+            .chain(changes.merge(stopped))
             .take_while(Option::is_some)
             .filter_map(|event| event);
         Sse::new(events).keep_alive(KeepAlive::default())
@@ -1981,14 +1987,21 @@ mod tests {
             .unwrap()
             .to_owned();
         assert_eq!(kind, "text/event-stream");
-        server.changes.send("docs").unwrap();
         let mut events = response.into_body().into_data_stream();
-        let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert_eq!(&event[..], b"data: changed\n\n");
+        let mut next = async || {
+            tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+        };
+        let first = next().await;
+        assert_eq!(
+            String::from_utf8_lossy(&first),
+            format!("event: version\ndata: {}\n\n", env!("CARGO_PKG_VERSION"))
+        );
+        server.changes.send("docs").unwrap();
+        assert_eq!(&next().await[..], b"data: changed\n\n");
     }
 
     #[tokio::test]
@@ -2002,6 +2015,8 @@ mod tests {
             .unwrap();
         server.stopping.send_replace(true);
         let mut events = response.into_body().into_data_stream();
+        let version = events.next().await.unwrap().unwrap();
+        assert!(version.starts_with(b"event: version\n"), "{version:?}");
         let end = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
             .await
             .expect("the stream ends, as the server could not stop while it is open");

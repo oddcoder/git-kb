@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "git-kb"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -966,6 +966,7 @@ dependencies = [
  "pagefind",
  "percent-encoding",
  "pulldown-cmark",
+ "semver",
  "serde",
  "serde_json",
  "similar",

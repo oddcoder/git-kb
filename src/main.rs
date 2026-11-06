@@ -11,6 +11,7 @@ use git_kb::git::{Repo, When};
 use git_kb::new::{New, new_page};
 use git_kb::plugins::{self, Plugins};
 use git_kb::serve::Server;
+use git_kb::update::{Restart, Updates};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -62,33 +63,7 @@ fn main() -> ExitCode {
     }
 
     match command {
-        Command::Serve { .. } => {
-            let address = SocketAddr::new(config.serve.host, config.serve.port);
-            let served = tokio::runtime::Runtime::new()
-                .map_err(anyhow::Error::from)
-                .and_then(|runtime| {
-                    // Until Ctrl-C, after which the requests begun are answered, and no more; or, at a
-                    // second, at once.
-                    runtime.block_on(
-                        Server::new(config.root.clone(), config.title.clone())
-                            .looking(config.look.clone())
-                            .typing(git_kb::schema::doctypes(&config.doctypes))
-                            .commenting(&config.comments)
-                            .syncing(config.serve.sync_every)
-                            .run(address, async {
-                                tokio::signal::ctrl_c().await.unwrap_or(());
-                                tokio::spawn(async {
-                                    tokio::signal::ctrl_c().await.unwrap_or(());
-                                    std::process::exit(130);
-                                });
-                            }),
-                    )
-                });
-            if let Err(e) = served {
-                error!("{e:#}");
-                return ExitCode::FAILURE;
-            }
-        }
+        Command::Serve { .. } => return serve(&config, &folder),
         Command::Build { .. } => {
             let out = &config.build.out;
             let builder = Builder::new(config.title.clone(), config.url.clone())
@@ -114,6 +89,60 @@ fn main() -> ExitCode {
         } => return write_new(&config, &doctype, &title, &folder),
     }
     ExitCode::SUCCESS
+}
+
+/// Serves the site until Ctrl-C, or until a newer version is installed, after which the requests begun are answered,
+/// and no more, and it runs instead; or, at a Ctrl-C then, at once.
+fn serve(config: &Config, folder: &Path) -> ExitCode {
+    let address = SocketAddr::new(config.serve.host, config.serve.port);
+    let updates = Updates::find(folder);
+    let served = tokio::runtime::Runtime::new()
+        .map_err(anyhow::Error::from)
+        .and_then(|runtime| {
+            runtime.block_on(async {
+                let (restarting, restart) = tokio::sync::oneshot::channel();
+                Server::new(config.root.clone(), config.title.clone())
+                    .looking(config.look.clone())
+                    .typing(git_kb::schema::doctypes(&config.doctypes))
+                    .commenting(&config.comments)
+                    .syncing(config.serve.sync_every)
+                    .run(address, async move {
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => {}
+                            newer = updated(updates) => {
+                                info!(version = %newer.version, "restarting as the version installed");
+                                let _ = restarting.send(newer);
+                            }
+                        }
+                        tokio::spawn(async {
+                            tokio::signal::ctrl_c().await.unwrap_or(());
+                            std::process::exit(130);
+                        });
+                    })
+                    .await?;
+                Ok(restart.await.ok())
+            })
+        });
+    match served {
+        Ok(None) => ExitCode::SUCCESS,
+        Ok(Some(newer)) => {
+            let e = newer.run();
+            error!("not restarted: {e}");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            error!("{e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The newer version installed, once there is one; never, when git-kb does not update itself.
+async fn updated(updates: Option<Updates>) -> Restart {
+    match updates {
+        Some(updates) => updates.next().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// A new page of a doctype, from its template, in a folder of the site; and says where.
