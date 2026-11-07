@@ -96,21 +96,38 @@ function load(fresh: Document): void {
   }
 }
 
+// One fetch at a time, so that a page that takes the server a while cannot come back after a fresher one and be
+// swapped in over it: a change while one is fetched has the page fetched once more after it.
 let waiting: ReturnType<typeof setTimeout> | undefined;
+let fetching = false, again = false;
 async function refresh(): Promise<void> {
   waiting = undefined;
+  if (fetching) {
+    again = true;
+    return;
+  }
   if (busy()) {
     waiting = setTimeout(refresh, 1000);
     return;
   }
-  const res = await fetch(location.href, { cache: 'no-store' }).catch(() => null);
-  if (!res) return;
-  const fresh = new DOMParser().parseFromString(await res.text(), 'text/html');
-  if (busy()) {
-    waiting = setTimeout(refresh, 1000);
-    return;
+  fetching = true;
+  try {
+    const res = await fetch(location.href, { cache: 'no-store' }).catch(() => null);
+    if (!res) return;
+    const fresh = new DOMParser().parseFromString(await res.text(), 'text/html');
+    if (busy()) {
+      waiting = setTimeout(refresh, 1000);
+      return;
+    }
+    swap(fresh);
+  } finally {
+    fetching = false;
+    if (again) {
+      again = false;
+      clearTimeout(waiting);
+      void refresh();
+    }
   }
-  swap(fresh);
 }
 
 // The page loaded again as a whole, once the reader is done, as the server began again, as another version of git-kb or

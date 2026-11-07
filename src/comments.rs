@@ -23,8 +23,8 @@
 //! clones can, and a push so refused is fetched, merged and pushed again. A ref is only ever moved forward here:
 //! one that has gone another way is merged with what is here, every file of each, so nothing seen is lost.
 
-use std::collections::BTreeMap;
-use std::collections::hash_map::RandomState;
+use std::collections::hash_map::{Entry, RandomState};
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{BuildHasher, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -39,7 +39,7 @@ use gix::objs::tree::EntryKind;
 use gix::refs::transaction::PreviousValue;
 use gix::traverse::tree::Recorder;
 use serde::{Deserialize, Serialize};
-use similar::{Algorithm, DiffTag, capture_diff_slices};
+use similar::{Algorithm, DiffOp, DiffTag, capture_diff_slices};
 
 use crate::diff::Diff;
 use crate::git::{Repo, When};
@@ -199,6 +199,8 @@ pub struct Store {
     writing: Mutex<()>,
     /// What the last sync did.
     synced: Mutex<Option<Synced>>,
+    /// Where each thread's page is at a commit, as git found it renamed, which never changes, so found once.
+    moved: Mutex<HashMap<(ObjectId, PathBuf, ObjectId), Option<PathBuf>>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -219,6 +221,7 @@ impl Store {
             namespace: namespace.trim_end_matches('/').to_string(),
             writing: Mutex::default(),
             synced: Mutex::default(),
+            moved: Mutex::default(),
         }
     }
 
@@ -449,6 +452,16 @@ impl Store {
     ) -> anyhow::Result<OnPage> {
         let repo = self.git.to_thread_local();
         let mut on = OnPage::default();
+        // The page's blocks, read once for every thread that needs them, and only if one does; and how the page
+        // changed since each text threads began on, worked out once for all the threads begun on it.
+        let blocks = std::cell::OnceCell::new();
+        let blocks = || {
+            blocks
+                .get_or_init(|| renderer.block_ranges(text))
+                .as_slice()
+        };
+        let now: Vec<&str> = text.lines().collect();
+        let mut since: HashMap<ObjectId, Vec<DiffOp>> = HashMap::new();
         for thread in self.threads()? {
             let known = repo.find_commit(thread.commit).is_ok();
             let ours = known && is_ancestor(&repo, thread.commit, at);
@@ -460,12 +473,19 @@ impl Store {
             if now_at.as_deref() != Some(page) {
                 continue;
             }
-            // Its copy of the text it began on may not have been fetched.
-            let Ok(then) = repo.find_blob(thread.text) else {
-                continue;
+            let ops = match since.entry(thread.text) {
+                Entry::Occupied(known) => known.into_mut(),
+                // Its copy of the text it began on may not have been fetched.
+                Entry::Vacant(new) => {
+                    let Ok(then) = repo.find_blob(thread.text) else {
+                        continue;
+                    };
+                    let then = String::from_utf8_lossy(&then.data);
+                    let then: Vec<&str> = then.lines().collect();
+                    new.insert(capture_diff_slices(Algorithm::Patience, &then, &now))
+                }
             };
-            let then = String::from_utf8_lossy(&then.data).into_owned();
-            match place(&thread, &then, text, renderer) {
+            match place(&thread, ops, text, &blocks) {
                 Some((lines, state)) if ours || plainly_here(&thread, text, &lines, state) => {
                     on.found.push(Located {
                         thread,
@@ -481,7 +501,7 @@ impl Store {
     }
 
     /// Where a thread's page is at a commit, from the site's top: where it began, if it is still there; or else
-    /// where git finds it was renamed to; or none, when it is gone.
+    /// where git finds it was renamed to, once for each commit; or none, when it is gone.
     fn path_at(
         &self,
         repo: &gix::Repository,
@@ -492,6 +512,11 @@ impl Store {
         let now = repo.find_commit(at)?.tree()?;
         if thread.commit == at || now.lookup_entry_by_path(&full)?.is_some() {
             return Ok(Some(thread.page.clone()));
+        }
+        let key = (thread.commit, thread.page.clone(), at);
+        let moved = || self.moved.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(known) = moved().get(&key) {
+            return Ok(known.clone());
         }
         let then = repo.find_commit(thread.commit)?.tree()?;
         let mut options = gix::diff::Options::default();
@@ -512,7 +537,15 @@ impl Store {
                 }
                 _ => None,
             });
-        Ok(renamed.and_then(|path| path.strip_prefix(&self.prefix).ok().map(Path::to_path_buf)))
+        let found =
+            renamed.and_then(|path| path.strip_prefix(&self.prefix).ok().map(Path::to_path_buf));
+        let mut moved = moved();
+        // Each commit adds its own; a server that has seen many forgets them all, to find again what it is asked.
+        if moved.len() > 10_000 {
+            moved.clear();
+        }
+        moved.insert(key, found.clone());
+        Ok(found)
     }
 
     /// The tips of everyone's refs.
@@ -912,18 +945,19 @@ fn plainly_here(thread: &Thread, text: &str, lines: &Range<usize>, state: State)
     state == State::Same || Diff::similarity(&thread.quote, &here) >= 0.6
 }
 
-/// Where a thread's lines are in a page's text now, from the text it began on: followed through the edits since,
-/// or, when they are gone, the block most like the one it began on, if any is like enough.
-fn place(
+/// Where a thread's lines are in a page's text now, from how its lines changed since the text it began on, `since`:
+/// followed through the edits, or, when they are gone, the block most like the one it began on, if any is like
+/// enough. The page's blocks, as `blocks` gives them, are looked at only then, as for most threads, whose lines are as
+/// they were, they need not be.
+fn place<'b>(
     thread: &Thread,
-    then: &str,
+    since: &[DiffOp],
     now: &str,
-    renderer: &Renderer,
+    blocks: &dyn Fn() -> &'b [Range<usize>],
 ) -> Option<(Range<usize>, State)> {
-    let (a, b): (Vec<&str>, Vec<&str>) = (then.lines().collect(), now.lines().collect());
     let (start, end) = (thread.lines.start, thread.lines.end);
     let (mut new_start, mut new_end, mut changed) = (None, None, false);
-    for op in capture_diff_slices(Algorithm::Patience, &a, &b) {
+    for op in since {
         let (tag, old, new) = op.as_tag_tuple();
         if tag != DiffTag::Equal && old.start < end && start < old.end.max(old.start + 1) {
             changed = true;
@@ -950,20 +984,31 @@ fn place(
         .chain(now.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
     let line = |offset: usize| starts.partition_point(|&s| s <= offset).saturating_sub(1);
-    let blocks: Vec<(f64, Range<usize>)> = renderer
-        .block_ranges(now)
-        .into_iter()
-        .map(|r| {
-            let lines = line(r.start)..line(r.end.saturating_sub(1).max(r.start)) + 1;
-            (Diff::similarity(&thread.quote, &now[r]), lines)
-        })
-        .collect();
+    // Of the blocks `within` takes, the one most like the thread's text, if like enough: each block's likeness worked
+    // out only once it is within, and only once.
+    let likeness = std::cell::RefCell::new(BTreeMap::new());
     let best = |within: &dyn Fn(&Range<usize>) -> bool, enough: f64| {
-        blocks
+        blocks()
             .iter()
-            .filter(|(likeness, lines)| *likeness >= enough && within(lines))
+            .enumerate()
+            .map(|(i, r)| {
+                (
+                    i,
+                    r,
+                    line(r.start)..line(r.end.saturating_sub(1).max(r.start)) + 1,
+                )
+            })
+            .filter(|(_, _, lines)| within(lines))
+            .map(|(i, r, lines)| {
+                let alike = *likeness
+                    .borrow_mut()
+                    .entry(i)
+                    .or_insert_with(|| Diff::similarity(&thread.quote, &now[r.clone()]));
+                (alike, lines)
+            })
+            .filter(|(alike, _)| *alike >= enough)
             .max_by(|x, y| x.0.total_cmp(&y.0))
-            .map(|(_, lines)| lines.clone())
+            .map(|(_, lines)| lines)
     };
     if let (Some(s), Some(e)) = (new_start, new_end)
         && s < e
