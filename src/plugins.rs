@@ -332,10 +332,15 @@ impl Plugins {
         self.list.iter().find(|p| p.name == name)
     }
 
-    /// A block as its plugin renders it: a figure, with its number and caption when labelled, and its source under
-    /// a bar; or, for a plugin whose blocks are not figures, the block alone.
+    /// A block as its plugin renders it: a figure, with its number and caption when labelled, the caption given as
+    /// HTML, and its source under a bar; or, for a plugin whose blocks are not figures, the block alone.
     #[must_use]
-    pub fn render_block(&self, plugin: &Plugin, source: &str, figure: Option<&Figure>) -> String {
+    pub fn render_block(
+        &self,
+        plugin: &Plugin,
+        source: &str,
+        figure: Option<(&Figure, &str)>,
+    ) -> String {
         let stage = self.stage(plugin, source);
         let tag = Renderer::escape(&plugin.name);
         if !plugin.figure {
@@ -343,11 +348,11 @@ impl Plugins {
         }
         let code = Renderer::highlight(&plugin.highlight, source)
             .unwrap_or_else(|| Renderer::escape(source));
-        let (id, caption) = figure.map_or((String::new(), String::new()), |f| {
-            let caption = if f.caption.is_empty() {
+        let (id, caption) = figure.map_or((String::new(), String::new()), |(f, caption)| {
+            let caption = if caption.is_empty() {
                 String::new()
             } else {
-                format!(": {}", Renderer::escape(&f.caption))
+                format!(": {caption}")
             };
             (
                 format!(r#" id="{}""#, Renderer::escape(&f.id)),

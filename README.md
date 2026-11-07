@@ -152,6 +152,15 @@ Plugins render what Markdown alone does not: fenced blocks such as ```` ```tikz 
 
 A diagram plugin's blocks are *figures*:
 - Labelled on their fence, as in ```` ```mermaid #fig:flow "Data flow" ````, they are numbered in page order, and their number and caption show in the bar under them.
+- A caption too long for the fence's line goes under the closing fence instead, in a paragraph that begins with `: `, over as many lines as it needs; it is then the figure's, not a paragraph of the page. Either way, a caption may hold math, as `$O(n^2)$`, and Markdown.
+
+  ````markdown
+  ```mermaid #fig:flow
+  graph LR; A-->B
+  ```
+  : The flow, each step costing $O(n^2)$ when
+    the queue is full.
+  ````
 - Text refers to them as `@fig:flow`, or `@other.md#fig:flow` for one on another page. Readers see "Figure 2", with the caption when pointed at; a reference to no such figure is marked.
 - Each shows its source under that bar, and can be clicked to zoom.
 

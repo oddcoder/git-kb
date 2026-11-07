@@ -117,6 +117,20 @@ pub struct Figure {
 }
 
 impl Figure {
+    /// A caption's text, as a title shows it: its markup gone, its math as written, between dollars.
+    #[must_use]
+    pub fn text(caption: &str) -> String {
+        Parser::new_ext(caption, Options::ENABLE_MATH)
+            .filter_map(|event| match event {
+                Event::Text(t) | Event::Code(t) => Some(t.into_string()),
+                Event::InlineMath(m) => Some(format!("${m}$")),
+                Event::DisplayMath(m) => Some(format!("$${m}$$")),
+                Event::SoftBreak | Event::HardBreak => Some(" ".into()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// A fence's label and caption, from its info after the language: `#fig:id` and `"caption"`, in either
     /// order; none when it has no `#fig:` label.
     #[must_use]
@@ -254,10 +268,12 @@ impl Renderer {
     }
 
     /// A page's events, as the parser gives them with where each is in its text, but for its front matter, which
-    /// is none of its text: not rendered, nor a block, nor searched. See `front`.
+    /// is none of its text: not rendered, nor a block, nor searched. See `front`. A labelled figure followed by a
+    /// paragraph beginning with `: ` has that paragraph for its caption, as if written on its fence: the figure's
+    /// block runs on to the paragraph's end, and the paragraph is not one of its own.
     fn events_at<'a>(&self, markdown: &'a str) -> impl Iterator<Item = (Event<'a>, Range<usize>)> {
         let mut front = false;
-        Parser::new_ext(markdown, self.options)
+        let events: Vec<_> = Parser::new_ext(markdown, self.options)
             .into_offset_iter()
             .filter(move |(event, _)| match event {
                 Event::Start(Tag::MetadataBlock(_)) => {
@@ -270,6 +286,77 @@ impl Renderer {
                 }
                 _ => !front,
             })
+            .collect();
+        self.captioned(markdown, &events).into_iter()
+    }
+
+    /// Each labelled figure followed by a `: ` paragraph, with the paragraph taken into its fence as its caption.
+    fn captioned<'a>(
+        &self,
+        markdown: &'a str,
+        events: &[(Event<'a>, Range<usize>)],
+    ) -> Vec<(Event<'a>, Range<usize>)> {
+        let mut out = Vec::with_capacity(events.len());
+        let mut i = 0;
+        while i < events.len() {
+            let (event, range) = &events[i];
+            if let Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) = event
+                && self.plugins.is_figure(Self::lang(info))
+                && let Some((id, _)) = Figure::label(info)
+                && let Some(end) = events[i..]
+                    .iter()
+                    .position(|(e, _)| matches!(e, Event::End(TagEnd::CodeBlock)))
+                    .map(|at| i + at)
+                && let Some((caption, after)) = Self::caption(markdown, events, end + 1)
+            {
+                let info = format!("{} #{id} \"{caption}\"", Self::lang(info));
+                let start = Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info.into())));
+                out.push((start, range.start..events[after - 1].1.end));
+                out.extend(events[i + 1..=end].iter().cloned());
+                i = after;
+                continue;
+            }
+            out.push(events[i].clone());
+            i += 1;
+        }
+        out
+    }
+
+    /// A caption written under a figure: the paragraph at `at`, if it begins with `: `, as written, its lines
+    /// joined; and where the events after it begin.
+    fn caption(
+        markdown: &str,
+        events: &[(Event, Range<usize>)],
+        at: usize,
+    ) -> Option<(String, usize)> {
+        let (Event::Start(Tag::Paragraph), _) = events.get(at)? else {
+            return None;
+        };
+        let end = at
+            + events[at..]
+                .iter()
+                .position(|(e, _)| matches!(e, Event::End(TagEnd::Paragraph)))?;
+        // Each part of the paragraph as it is written, and a space for each line's end.
+        let (mut written, mut depth) = (String::new(), 0usize);
+        for (event, range) in &events[at + 1..end] {
+            match event {
+                Event::Start(_) => {
+                    if depth == 0 {
+                        written.push_str(&markdown[range.clone()]);
+                    }
+                    depth += 1;
+                }
+                Event::End(_) => depth = depth.saturating_sub(1),
+                Event::SoftBreak | Event::HardBreak if depth == 0 => written.push(' '),
+                _ if depth == 0 => written.push_str(&markdown[range.clone()]),
+                _ => {}
+            }
+        }
+        let caption = written.strip_prefix(": ")?.trim();
+        Some((
+            caption.split_whitespace().collect::<Vec<_>>().join(" "),
+            end + 1,
+        ))
     }
 
     /// The same, without where each is.
@@ -516,7 +603,7 @@ impl Renderer {
     /// A page's labelled figures, numbered in the order they come.
     #[must_use]
     pub fn figures(&self, markdown: &str) -> Vec<Figure> {
-        Parser::new_ext(markdown, self.options)
+        self.events(markdown)
             .filter_map(|e| match e {
                 Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
                     if self.plugins.is_figure(Self::lang(&info)) =>
@@ -739,7 +826,7 @@ impl Renderer {
                         out,
                         r#"<a class="fig-ref" href="{}" title="{}">Figure {number}{on}</a>"#,
                         Self::escape(&href),
-                        Self::escape(&caption)
+                        Self::escape(&Figure::text(&caption))
                     )
                 }
                 None => write!(
@@ -811,8 +898,11 @@ impl Renderer {
         if let Some(plugin) = self.plugins.block(&lang) {
             let source = Self::plain_text(&inner);
             let figure = label.and_then(|(id, _)| figures.iter().find(|f| f.id == id));
+            let caption = figure.map(|f| self.inline(&f.caption)).unwrap_or_default();
             return vec![Event::Html(
-                self.plugins.render_block(plugin, &source, figure).into(),
+                self.plugins
+                    .render_block(plugin, &source, figure.map(|f| (f, caption.as_str())))
+                    .into(),
             )];
         }
         match Self::highlight(&lang, &Self::plain_text(&inner)) {
@@ -870,6 +960,17 @@ impl Renderer {
         events.extend(inner);
         events.push(Event::End(end));
         events
+    }
+
+    /// Markdown that is a line of text, as a caption, as HTML to go inside another element: its math set as the page's
+    /// is, and its paragraph's tags taken off.
+    fn inline(&self, markdown: &str) -> String {
+        let html = self.render(markdown).html;
+        let html = html.trim_end();
+        html.strip_prefix("<p>")
+            .and_then(|h| h.strip_suffix("</p>"))
+            .unwrap_or(html)
+            .to_string()
     }
 
     /// The text of some events, without their markup: text and code, but not raw HTML.
@@ -1522,6 +1623,93 @@ mod tests {
         let html = with_plugins().render(FIGURES).html;
         assert!(
             html.contains(r##"See <a class="fig-ref" href="#fig:b" title="Second">Figure 2</a>, then <a class="fig-ref" href="#fig:a" title="First">Figure 1</a>."##),
+            "{html}"
+        );
+    }
+
+    /// A figure captioned on its fence, and one under it, over two lines, with math and markup in both.
+    const CAPTIONED: &str = concat!(
+        "See @fig:a and @fig:b.\n\n",
+        "```tikz #fig:a \"Costs $O(n^2)$\"\n\\draw (0,0);\n```\n\n",
+        "```tikz #fig:b \"Not this one\"\n\\draw (1,1);\n```\n",
+        ": The pipeline, its stages costing $O(n^2)$\n  each, over **two** lines.\n\n",
+        "After.\n",
+    );
+
+    #[test]
+    fn a_caption_is_on_its_fence_or_under_it_over_many_lines() {
+        let r = with_plugins();
+        let captions: Vec<String> = r
+            .figures(CAPTIONED)
+            .into_iter()
+            .map(|f| f.caption)
+            .collect();
+        assert_eq!(
+            captions,
+            [
+                "Costs $O(n^2)$",
+                "The pipeline, its stages costing $O(n^2)$ each, over **two** lines."
+            ]
+        );
+        let html = r.render(CAPTIONED).html;
+        let math = r#"<span data-plugin="mathjax"><span class="math">\(O(n^2)\)</span></span>"#;
+        assert!(
+            html.contains(&format!("<b>Figure 1</b>: Costs {math}</span>")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "<b>Figure 2</b>: The pipeline, its stages costing {math} each, over <strong>two</strong> lines.</span>"
+            )),
+            "{html}"
+        );
+        assert!(
+            !html.contains("<p>:"),
+            "the caption is not a paragraph of its own: {html}"
+        );
+        assert!(html.contains("<p>After.</p>"), "{html}");
+    }
+
+    #[test]
+    fn a_caption_under_a_figure_is_of_the_figure_s_block() {
+        let blocks = with_plugins().blocks(CAPTIONED);
+        assert_eq!(blocks.len(), 4, "{blocks:?}");
+        assert!(
+            blocks[2].starts_with("```tikz #fig:b") && blocks[2].ends_with("over **two** lines."),
+            "{blocks:?}"
+        );
+        assert_eq!(blocks[3], "After.");
+    }
+
+    #[test]
+    fn a_reference_s_title_is_its_figure_s_caption_as_text() {
+        let html = with_plugins().render(CAPTIONED).html;
+        assert!(
+            html.contains(r#"title="Costs $O(n^2)$">Figure 1</a>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"title="The pipeline, its stages costing $O(n^2)$ each, over two lines.">Figure 2</a>"#),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn a_colon_paragraph_after_anything_but_a_labelled_figure_is_a_paragraph() {
+        let r = with_plugins();
+        for markdown in [
+            "```tikz\n\\draw (0,0);\n```\n: Unlabelled.\n",
+            "```rust\nfn f() {}\n```\n: Not a figure.\n",
+            "Text.\n\n: Alone.\n",
+        ] {
+            let html = r.render(markdown).html;
+            assert!(html.contains("<p>: "), "{markdown}: {html}");
+        }
+        let html = r
+            .render("```tikz #fig:a \"Kept\"\n\\draw (0,0);\n```\n\nNo colon.\n")
+            .html;
+        assert!(
+            html.contains("<b>Figure 1</b>: Kept</span>") && html.contains("<p>No colon.</p>"),
             "{html}"
         );
     }

@@ -43,7 +43,7 @@ function swap(fresh: Document): void {
   const resolved = $<HTMLInputElement>('#show-resolved')?.checked;
   const open = new Set($$<HTMLDetailsElement>('details.thread[open]').map((d) => d.id));
   const closed = new Set($$<HTMLDetailsElement>('details.thread:not([open])').map((d) => d.id));
-  // Diagrams drawn already, by their plugin and source, to put back in place of the same diagram undrawn.
+  // Diagrams drawn already, by their plugin and source, to put back in the same diagram undrawn.
   const key = (f: HTMLElement) => `${f.dataset.plugin}\n${$('details code', f)?.textContent}`;
   const drawn = new Map($$('figure.kb-block[data-rendered]').map((f) => [key(f), f]));
   for (const [part, after] of PARTS) {
@@ -54,9 +54,15 @@ function swap(fresh: Document): void {
   }
   $('.layout')?.classList.toggle('has-rail', !!$('.layout > .rail'));
   document.title = fresh.title;
+  // The drawing alone is put back: the fresh figure's bar, its number and caption, may have changed. Each drawing
+  // once, as two figures of the same source are two drawings.
   for (const figure of $$('figure.kb-block')) {
     const old = drawn.get(key(figure));
-    if (old) figure.replaceWith(old);
+    const stage = old && $('.kb-stage', old), undrawn = $('.kb-stage', figure);
+    if (!stage || !undrawn) continue;
+    drawn.delete(key(figure));
+    undrawn.replaceWith(stage);
+    figure.setAttribute('data-rendered', '');
   }
   const box = $<HTMLInputElement>('#v-source');
   if (box) box.checked = !!source;
