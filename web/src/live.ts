@@ -120,6 +120,13 @@ function reload(): void {
   else location.reload();
 }
 
+// A change the page made itself, as a reply sent from it: fetched afresh at once, rather than when the server tells of it.
+document.addEventListener('kb-stale', (e) => {
+  e.preventDefault();
+  clearTimeout(waiting);
+  void refresh();
+});
+
 // Changes come in bursts, as a save writes a file twice or a commit moves several refs: one fetch once they settle.
 const events = new EventSource('/_events');
 events.addEventListener('message', () => {

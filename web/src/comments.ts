@@ -369,6 +369,45 @@ document.addEventListener('drop', (e) => {
   for (const image of found) void keep(image, box, image.name.replace(/[[\]]/g, ''));
 });
 
+// A reply, a thread resolved or reopened, and a sync, sent from the page rather than by leaving it: once the server
+// has it, the page is fetched afresh in place, as when anything it shows changes, the reader kept where they are and
+// the thread as it was, open or not. The box is emptied first, so that it is not taken for a reply being written.
+// What the server refuses is said under the form, which keeps what was written. Should no script be there to fetch
+// the page afresh, it loads again, as it would without this one.
+const SENT = 'form.reply, form.resolve, form.sync';
+function refused(form: HTMLFormElement, why: string): void {
+  let said = form.querySelector<HTMLElement>('.cmt-refused');
+  if (!said) {
+    said = document.createElement('p');
+    said.className = 'cmt-refused';
+    said.setAttribute('role', 'alert');
+    form.append(said);
+  }
+  said.textContent = why;
+}
+document.addEventListener('submit', async (e) => {
+  const form = e.target instanceof HTMLFormElement && e.target.matches(SENT) ? e.target : null;
+  if (!form) return;
+  e.preventDefault();
+  const buttons = $$<HTMLButtonElement>('button', form);
+  if (buttons.some((b) => b.disabled)) return;
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    const body = new URLSearchParams([...new FormData(form)].map(([k, v]) => [k, String(v)]));
+    // The server answers what it took by sending the reader back to the page, which is fetched afresh below instead.
+    const res = await fetch(form.action, { method: 'POST', body, redirect: 'manual' });
+    if (res.type !== 'opaqueredirect' && !res.ok) throw new Error((await res.text()) || res.statusText);
+    form.reset();
+    form.querySelector('.cmt-refused')?.remove();
+    if (form.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+    if (document.dispatchEvent(new Event('kb-stale', { cancelable: true }))) location.reload();
+  } catch (err) {
+    refused(form, err instanceof Error ? err.message : String(err));
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+});
+
 // Cards placed again whenever any grows or shrinks, as a reply box opens or a thread folds, and when the page does.
 let pending = false;
 const again = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; place(); }); } };

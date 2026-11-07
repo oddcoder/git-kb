@@ -516,6 +516,7 @@ a.broken { color: light-dark(#a8432f, #d9826f); text-decoration: underline dashe
                             text-transform: uppercase; letter-spacing: 0.04em; }
 .rail-lost { margin: 24px 0 8px; }
 .rail-empty { margin: 0; font-size: 13px; }
+.cmt-refused { margin: 6px 0 0; color: light-dark(#a8432f, #d9826f); font-size: 12px; white-space: pre-wrap; }
 .show-resolved { color: var(--muted); font-size: 12px; cursor: pointer; }
 .thread + .thread, .rail-lost + .thread { margin-top: 10px; }
 .thread { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); }
