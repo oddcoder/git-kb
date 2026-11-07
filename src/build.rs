@@ -419,6 +419,7 @@ impl Builder {
             moved: Some(&moved),
             broken: Some(&broken),
             elsewhere: Some(&elsewhere),
+            numbered: true,
             ..Opts::default()
         };
         let notes = within
@@ -1022,6 +1023,10 @@ mod tests {
         assert!(home.starts_with("<!doctype html>"), "{home}");
         assert!(home.contains("<title>Home · docs</title>"), "{home}");
         assert!(home.contains(r#"<h1 id="home">Home</h1>"#), "{home}");
+        assert!(
+            home.contains(r#"<p><span class="sn" id="s1" data-n="1""#),
+            "{home}"
+        );
     }
 
     #[test]

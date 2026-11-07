@@ -1097,6 +1097,7 @@ impl View<'_> {
         let opts = Opts {
             broken: Some(&broken),
             elsewhere: Some(&elsewhere),
+            numbered: true,
             ..Opts::default()
         };
         let (Some(repo), Some(at)) = (
@@ -1588,6 +1589,24 @@ mod tests {
         for path in ["/a.md", "/docsa.md", "/_assets/nope.css"] {
             assert_eq!(site.get(path).await.0, StatusCode::NOT_FOUND, "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_page_s_sentences_are_numbered_in_a_repository_or_not() {
+        let site = Site::with(&[("docs/a.md", b"# A\n\nOne. Two.")]);
+        let page = site.get("/docs/a.md").await.2;
+        assert!(
+            page.contains(r#"<span class="sn" id="s2" data-n="2""#),
+            "{page}"
+        );
+        let git = crate::git::tests::Git::new();
+        git.write("docs/a.md", "# A\n\nOne. Two.");
+        git.commit("write a");
+        let page = Site::of(git.top().join("docs")).get("/docs/a.md").await.2;
+        assert!(
+            page.contains(r#"<span class="sn" id="s2" data-n="2""#),
+            "{page}"
+        );
     }
 
     #[tokio::test]

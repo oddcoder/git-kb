@@ -286,6 +286,12 @@ blockquote { margin-left: 0; padding: 0 1em; border-left: 4px solid var(--line);
 hr { height: 4px; margin: 1.5em 0; border: 0; background: var(--line); }
 img { max-width: 100%; }
 mark { background: var(--mark); color: inherit; }
+/* Each sentence's number, small and faint before it, for readers to name it by. It is drawn here, not written in the
+   text, so that it is not selected, copied or searched with it. */
+.sn::before { content: attr(data-n); margin-right: 0.2em; color: var(--muted); font-size: 0.6em; font-style: normal;
+  font-weight: normal; font-variant-numeric: tabular-nums; line-height: 0; vertical-align: super; user-select: none;
+  opacity: 0.75; }
+.sn:target::before { color: var(--accent); font-weight: 600; opacity: 1; }
 
 table { display: block; width: max-content; max-width: 100%; overflow: auto; border-collapse: collapse; }
 th, td { padding: 6px 13px; border: 1px solid var(--line); }

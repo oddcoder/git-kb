@@ -19,6 +19,8 @@ use syntect::util::LinesWithEndings;
 use crate::front::Front;
 use crate::plugins::{self, Plugins};
 
+mod sentences;
+
 /// The syntaxes highlighter is loaded once and shared by every renderer.
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 
@@ -56,9 +58,17 @@ pub struct Heading {
 }
 
 impl Page {
-    /// A page from its events, as rendered, and its headings.
-    fn new(mut events: Vec<Event>, headings: Vec<Heading>, title_end: usize) -> Self {
-        let rest = events.split_off(title_end);
+    /// A page from its events, as rendered, and its headings; with its sentences numbered, below its title, if asked.
+    fn new(
+        mut events: Vec<Event>,
+        headings: Vec<Heading>,
+        title_end: usize,
+        numbered: bool,
+    ) -> Self {
+        let mut rest = events.split_off(title_end);
+        if numbered {
+            rest = sentences::number(rest, &|id| headings.iter().any(|h| h.id == id));
+        }
         let mut html = String::new();
         html::push_html(&mut html, events.into_iter());
         let title_end = html.len();
@@ -195,6 +205,8 @@ pub struct Opts<'a> {
     /// The page's figures, numbered, when what is rendered is a part of a page, as a block of a diff is; else the
     /// text's own are found.
     pub figures: Option<&'a [Figure]>,
+    /// Whether each sentence of its paragraphs and list items is numbered, as a page's are, for readers to name it.
+    pub numbered: bool,
 }
 
 /// Renders Markdown as HTML. What it holds is how it renders, so that what later features need, such as a
@@ -668,7 +680,7 @@ impl Renderer {
                 title_end = out.len();
             }
         }
-        Page::new(out, headings, title_end)
+        Page::new(out, headings, title_end, opts.numbered)
     }
 
     /// Text with its figure references as links, by their figures' numbers; any other event as it is.
