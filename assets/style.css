@@ -84,7 +84,8 @@
 [data-code="courier"] { --code-font: "Courier Prime", "Courier New", Courier, monospace; }
 
 * { box-sizing: border-box; }
-html { background: var(--page); color: var(--text); }
+/* A link to an anchor, as to a heading, lands it a little below the bar rather than under it. */
+html { background: var(--page); color: var(--text); scroll-padding-top: 64px; }
 body { margin: 0; font: var(--text-size)/1.6 var(--text-font); }
 
 /* The bar: the site's name, linked to its top, and the Aa menu; above the text's edges, as they scroll under it. */
