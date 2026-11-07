@@ -2,7 +2,8 @@
 //! of a git repository, git-kb looks there as it begins to serve, and every hour after, for a version numbered higher
 //! than its own; finding one, it installs it as it was installed itself, with cargo, into the same place, while it
 //! serves on. Once its binary is replaced, by that or by hand, it stops, as at Ctrl-C, answering the requests begun,
-//! and runs the new binary in its place, with the same arguments; open pages connect to it again, and load again.
+//! and runs the new binary in its place, with the same arguments, as `restart` does; open pages connect to it again,
+//! and load again.
 //!
 //! `git config kb.autoupdate false` turns this off, for a repository, or with `--global` for every one; `git -c
 //! kb.autoupdate=false kb serve`, for one server. git-kb that cargo did not install, as run from `target/`, never
@@ -236,8 +237,8 @@ impl Updates {
         })
     }
 
-    /// Looks for newer versions, and installs them, until its binary is replaced; then says what to run instead.
-    pub async fn next(mut self) -> Restart {
+    /// Looks for newer versions, and installs them, until its binary is replaced; then says the version it is now.
+    pub async fn next(mut self) -> String {
         if self.installed.source != Source::Fixed && enabled(&self.folder).await {
             info!(from = %self.installed.source, "updating itself, unless git config kb.autoupdate is false");
         }
@@ -250,8 +251,8 @@ impl Updates {
                 _ = watch.tick() => {}
                 _ = look.tick() => self.look().await,
             }
-            if let Some(restart) = self.replaced().await {
-                return restart;
+            if let Some(version) = self.replaced().await {
+                return version;
             }
         }
     }
@@ -393,9 +394,9 @@ impl Updates {
         args
     }
 
-    /// The binary installed in place of this one, by updating or by hand, once it has been left alone a while, so
-    /// that whatever wrote it is done, and it runs.
-    async fn replaced(&mut self) -> Option<Restart> {
+    /// The version of the binary installed in place of this one, by updating or by hand, once it has been left alone
+    /// a while, so that whatever wrote it is done, and it runs.
+    async fn replaced(&mut self) -> Option<String> {
         let written = fs::metadata(&self.exe).and_then(|m| m.modified()).ok()?;
         if written == self.written {
             return None;
@@ -421,10 +422,7 @@ impl Updates {
             );
             return None;
         }
-        Some(Restart {
-            exe: self.exe.clone(),
-            version,
-        })
+        Some(version)
     }
 
     /// cargo, run in the folder it installs into, so that only its own settings apply, not a repository's.
@@ -447,36 +445,6 @@ impl Updates {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_SSH_COMMAND", ssh);
         git
-    }
-}
-
-/// A newer binary, to run in place of this one.
-#[derive(Debug)]
-pub struct Restart {
-    exe: PathBuf,
-    /// Its version, as it says.
-    pub version: String,
-}
-
-impl Restart {
-    /// Runs the new binary in this process's place, with the same arguments; returns only if it cannot.
-    #[cfg(unix)]
-    #[must_use]
-    pub fn run(self) -> std::io::Error {
-        use std::os::unix::process::CommandExt;
-        let mut args = std::env::args_os();
-        let mut command = std::process::Command::new(&self.exe);
-        if let Some(name) = args.next() {
-            command.arg0(name);
-        }
-        command.args(args).exec()
-    }
-
-    /// Never made: there are no updates on Windows.
-    #[cfg(not(unix))]
-    #[must_use]
-    pub fn run(self) -> std::io::Error {
-        std::io::Error::from(std::io::ErrorKind::Unsupported)
     }
 }
 

@@ -9,10 +9,12 @@ use git_kb::cli::{Cli, Command};
 use git_kb::config::Config;
 use git_kb::git::{Repo, When};
 use git_kb::new::{New, new_page};
-use git_kb::plugins::{self, Plugins};
+use git_kb::plugins;
+use git_kb::reload::{Loaded, Watch};
+use git_kb::restart::Restart;
 use git_kb::serve::Server;
-use git_kb::update::{Restart, Updates};
-use tracing::{error, info};
+use git_kb::update::Updates;
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
@@ -38,32 +40,32 @@ fn main() -> ExitCode {
         error!(folder = %folder.display(), "not a folder");
         return ExitCode::FAILURE;
     }
-    let (config, config_path) = match Config::find(&folder) {
-        Ok(found) => found,
+    let loaded = match Loaded::load(&folder) {
+        Ok(loaded) => loaded,
         Err(e) => {
             error!("{e:#}");
             return ExitCode::FAILURE;
         }
     };
-    if let Some(file) = &config_path {
+    if let Some(file) = &loaded.file {
         info!(file = %file.display(), "settings");
     } else {
         info!("no {}: every setting is its default", Config::FILE);
     }
-
-    // The plugins git-kb.toml names, their commands' outputs kept in the repository's git folder.
-    let cache =
-        Repo::discover(&config.root).map(|repo| repo.git().git_dir().join("git-kb").join("cache"));
-    match Plugins::load(&config, config_path.as_deref(), cache) {
-        Ok(loaded) => plugins::set(loaded),
-        Err(e) => {
-            error!("{e:#}");
-            return ExitCode::FAILURE;
-        }
-    }
+    // A server watches what it loaded, to begin again when it changes; once the plugins are set, they are not.
+    let restart = Restart::here().filter(|_| matches!(command, Command::Serve { .. }));
+    let watch = restart.as_ref().and_then(|_| {
+        Watch::new(&folder, &loaded)
+            .inspect_err(|e| warn!("not watching the settings and plugins: {e:#}"))
+            .ok()
+    });
+    let Loaded {
+        config, plugins, ..
+    } = loaded;
+    plugins::set(plugins);
 
     match command {
-        Command::Serve { .. } => return serve(&config, &folder),
+        Command::Serve { .. } => return serve(&config, &folder, restart, watch),
         Command::Build { .. } => {
             let out = &config.build.out;
             let builder = Builder::new(config.title.clone(), config.url.clone())
@@ -91,16 +93,22 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Serves the site until Ctrl-C, or until a newer version is installed, after which the requests begun are answered,
-/// and no more, and it runs instead; or, at a Ctrl-C then, at once.
-fn serve(config: &Config, folder: &Path) -> ExitCode {
+/// Serves the site until Ctrl-C; or, given how to restart, until a newer version is installed, or its settings or
+/// plugins change, after which the requests begun are answered, and no more, and it runs again; or, at a Ctrl-C
+/// then, at once.
+fn serve(
+    config: &Config,
+    folder: &Path,
+    restart: Option<Restart>,
+    watch: Option<Watch>,
+) -> ExitCode {
     let address = SocketAddr::new(config.serve.host, config.serve.port);
-    let updates = Updates::find(folder);
+    let updates = restart.as_ref().and_then(|_| Updates::find(folder));
     let served = tokio::runtime::Runtime::new()
         .map_err(anyhow::Error::from)
         .and_then(|runtime| {
             runtime.block_on(async {
-                let (restarting, restart) = tokio::sync::oneshot::channel();
+                let (restarting, restarted) = tokio::sync::oneshot::channel();
                 Server::new(config.root.clone(), config.title.clone())
                     .looking(config.look.clone())
                     .typing(git_kb::schema::doctypes(&config.doctypes))
@@ -109,9 +117,13 @@ fn serve(config: &Config, folder: &Path) -> ExitCode {
                     .run(address, async move {
                         tokio::select! {
                             _ = tokio::signal::ctrl_c() => {}
-                            newer = updated(updates) => {
-                                info!(version = %newer.version, "restarting as the version installed");
-                                let _ = restarting.send(newer);
+                            version = updated(updates) => {
+                                info!(%version, "restarting as the version installed");
+                                let _ = restarting.send(());
+                            }
+                            () = reloaded(watch) => {
+                                info!("restarting with the settings and plugins changed");
+                                let _ = restarting.send(());
                             }
                         }
                         tokio::spawn(async {
@@ -120,27 +132,35 @@ fn serve(config: &Config, folder: &Path) -> ExitCode {
                         });
                     })
                     .await?;
-                Ok(restart.await.ok())
+                Ok(restarted.await.is_ok())
             })
         });
-    match served {
-        Ok(None) => ExitCode::SUCCESS,
-        Ok(Some(newer)) => {
-            let e = newer.run();
+    match (served, restart) {
+        (Ok(true), Some(restart)) => {
+            let e = restart.run();
             error!("not restarted: {e}");
             ExitCode::FAILURE
         }
-        Err(e) => {
+        (Ok(_), _) => ExitCode::SUCCESS,
+        (Err(e), _) => {
             error!("{e:#}");
             ExitCode::FAILURE
         }
     }
 }
 
-/// The newer version installed, once there is one; never, when git-kb does not update itself.
-async fn updated(updates: Option<Updates>) -> Restart {
+/// The version installed in place of this one, once there is one; never, when git-kb does not update itself.
+async fn updated(updates: Option<Updates>) -> String {
     match updates {
         Some(updates) => updates.next().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Once the settings or plugins have changed, and load; never, when they are not watched.
+async fn reloaded(watch: Option<Watch>) {
+    match watch {
+        Some(watch) => watch.changed().await,
         None => std::future::pending().await,
     }
 }

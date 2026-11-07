@@ -20,7 +20,8 @@
 //! styles = ["mermaid.css"]
 //!
 //! # Or rendered by git-kb, when it serves and when it builds: a command given the source on its input, whose
-//! # output, SVG or HTML, is the block. Outputs are kept, by their source, so each is made once.
+//! # output, SVG or HTML, is the block. Outputs are kept, by their source and the plugin as it is, so each is made
+//! # once, and again when the plugin changes.
 //! command = ["dot", "-Tsvg"]
 //!
 //! [options]                    # each option and its default; git-kb.toml may set any
@@ -189,6 +190,11 @@ pub struct Plugin {
     options: BTreeMap<String, String>,
     /// Its own files, served to the browser.
     files: BTreeMap<String, Vec<u8>>,
+    /// What it was loaded from, beyond git-kb's own: its folder, and the files its options name.
+    sources: Vec<PathBuf>,
+    /// A hash of all it was loaded from, its folder's every file too, so that a command's output kept is made again
+    /// when the plugin changes.
+    fingerprint: String,
 }
 
 /// The plugins in use.
@@ -261,6 +267,22 @@ impl Plugins {
             let _ = fs::create_dir_all(dir);
         }
         Ok(Self { list, cache })
+    }
+
+    /// The folders and files the plugins were loaded from, beyond git-kb's own.
+    pub fn sources(&self) -> impl Iterator<Item = &Path> {
+        self.list
+            .iter()
+            .flat_map(|p| p.sources.iter().map(PathBuf::as_path))
+    }
+
+    /// A hash of all the plugins were loaded from, to tell when that changes.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        self.list.iter().fold(String::new(), |mut all, p| {
+            let _ = writeln!(all, "{} {}", p.name, p.fingerprint);
+            all
+        })
     }
 
     #[must_use]
@@ -434,16 +456,19 @@ impl Plugins {
             .collect()
     }
 
-    /// A command's output for a source, kept by the command, its options and the source, so that each is made once.
+    /// A command's output for a source, kept by the plugin as it is, the command, its options and the source, so that
+    /// each is made once.
     fn run(&self, plugin: &Plugin, command: &[String], source: &str) -> String {
         let args: Vec<String> = command.iter().map(|a| fill_plain(a, plugin)).collect();
-        let key = gix::objs::compute_hash(
-            gix::hash::Kind::Sha1,
-            gix::objs::Kind::Blob,
-            format!("{}\0{}\0{source}", plugin.name, args.join("\0")).as_bytes(),
-        )
-        .map(|id| id.to_string())
-        .unwrap_or_default();
+        let key = hash(
+            format!(
+                "{}\0{}\0{}\0{source}",
+                plugin.name,
+                plugin.fingerprint,
+                args.join("\0")
+            )
+            .as_bytes(),
+        );
         let kept = self
             .cache
             .as_ref()
@@ -481,6 +506,7 @@ impl Plugin {
                     .ok_or_else(|| anyhow!("path must be text"))
             })
             .transpose()?;
+        let mut sources = vec![];
         let (manifest, mut files, dir) = if let Some(path) = path {
             let dir = base.join(path);
             let toml = dir.join("plugin.toml");
@@ -511,29 +537,7 @@ impl Plugin {
                 files.insert(file.clone(), bytes);
             }
         }
-        let mut options = BTreeMap::new();
-        for (key, default) in &m.options {
-            let value = given.remove(key).unwrap_or_else(|| default.clone());
-            options.insert(key.clone(), text(&value));
-        }
-        for (key, default) in &m.files {
-            let content = match given.remove(key) {
-                Some(value) => {
-                    let path = value
-                        .as_str()
-                        .ok_or_else(|| anyhow!("{key} must be a path"))?;
-                    fs::read(base.join(path)).with_context(|| format!("{key}: {path}"))?
-                }
-                None => match &dir {
-                    Some(dir) => fs::read(dir.join(default)).with_context(|| default.clone())?,
-                    None => files
-                        .get(default)
-                        .cloned()
-                        .ok_or_else(|| anyhow!("{default} is missing"))?,
-                },
-            };
-            options.insert(key.clone(), String::from_utf8_lossy(&content).into_owned());
-        }
+        let options = Self::options(&m, &mut given, base, dir.as_deref(), &files, &mut sources)?;
         let command = match given.remove("command") {
             Some(value) => Some(
                 value
@@ -556,6 +560,14 @@ impl Plugin {
                     .join(", ")
             );
         }
+        let fingerprint = fingerprint(
+            &manifest,
+            &options,
+            command.as_deref(),
+            &files,
+            dir.as_deref(),
+        );
+        sources.extend(dir);
         Ok(Self {
             name: m.name,
             description: m.description,
@@ -572,8 +584,92 @@ impl Plugin {
             command,
             options,
             files,
+            sources,
+            fingerprint,
         })
     }
+}
+
+impl Plugin {
+    /// Every option's value, as text: given in git-kb.toml, taken from `given`, or the plugin's default; a file
+    /// option, its content, a file given being one of its `sources`.
+    fn options(
+        m: &Manifest,
+        given: &mut toml::Table,
+        base: &Path,
+        dir: Option<&Path>,
+        files: &BTreeMap<String, Vec<u8>>,
+        sources: &mut Vec<PathBuf>,
+    ) -> anyhow::Result<BTreeMap<String, String>> {
+        let mut options = BTreeMap::new();
+        for (key, default) in &m.options {
+            let value = given.remove(key).unwrap_or_else(|| default.clone());
+            options.insert(key.clone(), text(&value));
+        }
+        for (key, default) in &m.files {
+            let content = match given.remove(key) {
+                Some(value) => {
+                    let path = value
+                        .as_str()
+                        .ok_or_else(|| anyhow!("{key} must be a path"))?;
+                    sources.push(base.join(path));
+                    fs::read(base.join(path)).with_context(|| format!("{key}: {path}"))?
+                }
+                None => match dir {
+                    Some(dir) => fs::read(dir.join(default)).with_context(|| default.clone())?,
+                    None => files
+                        .get(default)
+                        .cloned()
+                        .ok_or_else(|| anyhow!("{default} is missing"))?,
+                },
+            };
+            options.insert(key.clone(), String::from_utf8_lossy(&content).into_owned());
+        }
+        Ok(options)
+    }
+}
+
+/// A hash of what a plugin was loaded from: its plugin.toml, its options' values, its command, its files, and,
+/// for the repository's own, every file in its folder that git does not ignore.
+fn fingerprint(
+    manifest: &str,
+    options: &BTreeMap<String, String>,
+    command: Option<&[String]>,
+    files: &BTreeMap<String, Vec<u8>>,
+    dir: Option<&Path>,
+) -> String {
+    let mut all = manifest.as_bytes().to_vec();
+    for (key, value) in options {
+        let _ = write!(all, "\0{key}={value}");
+    }
+    for arg in command.unwrap_or_default() {
+        let _ = write!(all, "\0{arg}");
+    }
+    for (name, bytes) in files {
+        let _ = write!(all, "\0{name}\0");
+        all.extend(bytes);
+    }
+    if let Some(dir) = dir {
+        let walk = ignore::WalkBuilder::new(dir)
+            .sort_by_file_name(std::cmp::Ord::cmp)
+            .build();
+        for file in walk
+            .flatten()
+            .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+        {
+            let name = file.path().strip_prefix(dir).unwrap_or(file.path());
+            let _ = write!(all, "\0{}\0", name.display());
+            all.extend(fs::read(file.path()).unwrap_or_default());
+        }
+    }
+    hash(&all)
+}
+
+/// A SHA-1 of bytes, in hex.
+fn hash(bytes: &[u8]) -> String {
+    gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
+        .map(|id| id.to_string())
+        .unwrap_or_default()
 }
 
 /// A TOML value as text: a list joined by commas.
@@ -890,6 +986,40 @@ pub(crate) mod tests {
                 .render_block(plugin, "shout", None)
                 .contains(">SHOUT"),
             "taken from what was kept"
+        );
+    }
+
+    #[test]
+    fn a_command_s_output_is_made_again_when_its_plugin_changes() {
+        // A command that runs a script of the plugin's own, which its plugin.toml does not name.
+        let (dir, mut given) = own(
+            "name = \"say\"\nblocks = [\"say\"]\ncommand = [\"sh\", \"{script}\"]\n[options]\nscript = \"\"\n",
+            &[("say.sh", "echo one")],
+        );
+        let script = dir.path().join("kb-plugin").join("say.sh");
+        given.insert("script".into(), script.display().to_string().into());
+        let config = Config {
+            plugins: [("say".to_string(), given)].into_iter().collect(),
+            base: dir.path().to_path_buf(),
+            ..Config::default()
+        };
+        let cache = dir.path().join("cache");
+        let render = || {
+            let plugins =
+                Plugins::load(&config, Some(Path::new("git-kb.toml")), Some(cache.clone()))
+                    .unwrap();
+            assert_eq!(
+                plugins.sources().collect::<Vec<_>>(),
+                [dir.path().join("kb-plugin")]
+            );
+            plugins.render_block(plugins.block("say").unwrap(), "x", None)
+        };
+        assert!(render().contains("one"));
+        fs::write(&script, "echo two").unwrap();
+        let again = render();
+        assert!(
+            again.contains("two"),
+            "made again, not what was kept: {again}"
         );
     }
 

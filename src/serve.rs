@@ -16,8 +16,8 @@
 //! git-kb's own files are beside the site, not in it, so that no page of the docs can be taken for one: the
 //! pages' style sheet and scripts under `/_assets/`, and `/_events`. Open pages load again when the site changes:
 //! the server tells them, as events from `/_events`, and a line of script in each page, the shell's, reloads it.
-//! Each time a page connects, the server first says its version, so that a page connecting again after it restarted
-//! as a newer one, as it does to update itself, loads again as a whole.
+//! Each time a page connects, the server first says which run of git-kb it is, so that a page connecting again after
+//! it began again, as it does as a newer version or with its settings or plugins changed, loads again as a whole.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -71,6 +71,8 @@ pub struct Server {
     changes: broadcast::Sender<Change>,
     /// Whether it is stopping, told to open pages' event streams, which would otherwise never end.
     stopping: watch::Sender<bool>,
+    /// Which run of which git-kb this is: its version, and when it began, told to each page as it connects.
+    began: String,
     /// The search bundles built, of the folder as it is, by "", and of commits, by their names; any change drops
     /// them, to be built again when next asked for.
     found: Mutex<HashMap<String, Arc<crate::find::Bundle>>>,
@@ -107,6 +109,14 @@ impl Server {
             shell,
             changes: broadcast::channel(16).0,
             stopping: watch::channel(false).0,
+            began: format!(
+                "{} {}",
+                env!("CARGO_PKG_VERSION"),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ),
             found: Mutex::new(HashMap::new()),
         }
     }
@@ -255,10 +265,12 @@ impl Server {
 
     /// The site's changes, as events, one each, for as long as the page listens, or until the server stops.
     fn events(&self) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>> + use<>> {
-        // First, which git-kb this is: a page connecting again knows by it whether the server came back as another.
+        // First, which run of git-kb this is, so that a page connecting again knows whether it began again since, as
+        // another version or with other settings or plugins; and how soon to connect again when it stops, as to.
         let version = tokio_stream::once(Some(Ok(Event::default()
-            .event("version")
-            .data(env!("CARGO_PKG_VERSION")))));
+            .event("server")
+            .data(&self.began)
+            .retry(std::time::Duration::from_millis(500)))));
         let changes = BroadcastStream::new(self.changes.subscribe()).filter_map(|change| {
             change
                 .ok()
@@ -1094,7 +1106,22 @@ impl View<'_> {
                 figure.caption,
             ))
         };
+        // A file of the site that is not a page, as an image, as it is now on disk: by an address that changes as it
+        // does, so that a page fetched afresh after it changed shows it changed, not as the browser kept it.
+        let stamped = |dest: &str| -> Option<String> {
+            if self.snapshot.is_some() || dest.contains(['?', '#']) {
+                return None;
+            }
+            let target = Graph::resolve(file, dest)
+                .filter(|f| !Server::is_markdown(f) && self.files.contains(f))?;
+            let written = std::fs::metadata(self.server.root.join(target))
+                .and_then(|m| m.modified())
+                .ok()?;
+            let at = written.duration_since(std::time::UNIX_EPOCH).ok()?;
+            Some(format!("{dest}?v={}", at.as_nanos()))
+        };
         let opts = Opts {
+            moved: Some(&stamped),
             broken: Some(&broken),
             elsewhere: Some(&elsewhere),
             numbered: true,
@@ -1592,6 +1619,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_page_s_images_are_linked_to_as_they_are_now() {
+        let site = Site::with(&[
+            (
+                "docs/a.md",
+                b"![A cat](cat.png) [B](b.md) [Away](https://x.org/cat.png)",
+            ),
+            ("docs/b.md", b"# B"),
+            ("docs/cat.png", b"one"),
+        ]);
+        let stamp = |page: &str| {
+            let at = page.find("src=\"cat.png?v=").expect(page) + "src=\"cat.png?v=".len();
+            page[at..at + page[at..].find('"').unwrap()].to_owned()
+        };
+        let page = site.get("/docs/a.md").await.2;
+        assert!(page.contains("href=\"b.md\""), "{page}");
+        assert!(page.contains("href=\"https://x.org/cat.png\""), "{page}");
+        let before = stamp(&page);
+        let (status, _, image) = site.get(&format!("/docs/cat.png?v={before}")).await;
+        assert_eq!((status, image.as_str()), (StatusCode::OK, "one"));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(site.docs.join("cat.png"), b"two").unwrap();
+        assert_ne!(stamp(&site.get("/docs/a.md").await.2), before);
+    }
+
+    #[tokio::test]
     async fn a_page_s_sentences_are_numbered_in_a_repository_or_not() {
         let site = Site::with(&[("docs/a.md", b"# A\n\nOne. Two.")]);
         let page = site.get("/docs/a.md").await.2;
@@ -2017,7 +2069,14 @@ mod tests {
         let first = next().await;
         assert_eq!(
             String::from_utf8_lossy(&first),
-            format!("event: version\ndata: {}\n\n", env!("CARGO_PKG_VERSION"))
+            format!("event: server\ndata: {}\nretry: 500\n\n", server.began)
+        );
+        assert!(
+            server
+                .began
+                .starts_with(&format!("{} ", env!("CARGO_PKG_VERSION"))),
+            "{}",
+            server.began
         );
         server.changes.send("docs").unwrap();
         assert_eq!(&next().await[..], b"data: changed\n\n");
@@ -2035,7 +2094,7 @@ mod tests {
         server.stopping.send_replace(true);
         let mut events = response.into_body().into_data_stream();
         let version = events.next().await.unwrap().unwrap();
-        assert!(version.starts_with(b"event: version\n"), "{version:?}");
+        assert!(version.starts_with(b"event: server\n"), "{version:?}");
         let end = tokio::time::timeout(std::time::Duration::from_secs(5), events.next())
             .await
             .expect("the stream ends, as the server could not stop while it is open");

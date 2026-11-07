@@ -11,8 +11,11 @@ import { $, $$ } from './dom';
 const PARTS: [string, string][] = [['.side', ''], ['main.page', ''], ['.layout > .rail', 'main.page'],
   ['.layout > .edge-rail', '.layout > .rail']];
 
+// Whether the reader is in the middle of something a fresh page would lose. A box they cannot type in, as the prompt
+// to hand the page to an AI, holds text from the start, and is not their writing.
 function busy(): boolean {
-  const typing = $$<HTMLTextAreaElement>('textarea').some((t) => t.value.trim() || t === document.activeElement);
+  const typing = $$<HTMLTextAreaElement>('textarea:not([readonly])')
+    .some((t) => t.value.trim() || t === document.activeElement);
   const card = $(':popover-open');
   const choosing = !(getSelection()?.isCollapsed ?? true);
   return typing || !!card || choosing || document.documentElement.classList.contains('dragging-layout');
@@ -110,8 +113,8 @@ async function refresh(): Promise<void> {
   swap(fresh);
 }
 
-// The page loaded again as a whole, once the reader is done, as the server is another version of git-kb, whose pages
-// and scripts may differ.
+// The page loaded again as a whole, once the reader is done, as the server began again, as another version of git-kb or
+// with other settings or plugins, so that its scripts, styles and look may differ.
 function reload(): void {
   if (busy()) setTimeout(reload, 1000);
   else location.reload();
@@ -123,15 +126,14 @@ events.addEventListener('message', () => {
   clearTimeout(waiting);
   waiting = setTimeout(refresh, 300);
 });
-// The server says which version of git-kb it is each time the page connects. Connecting again, after it stopped, as it
-// does to update itself, the page loads again: as a whole if it came back as another version, or else fetched afresh,
-// for what changed while it was away.
-let version: string | undefined;
-events.addEventListener('version', (e) => {
-  const was = version;
-  version = e.data;
+// The server says which run of git-kb it is each time the page connects. Connecting again, after it stopped, the page
+// loads again: as a whole if it began again since, or else fetched afresh, for what changed while it was away.
+let server: string | undefined;
+events.addEventListener('server', (e) => {
+  const was = server;
+  server = e.data;
   if (was === undefined) return;
   clearTimeout(waiting);
-  if (was !== version) reload();
+  if (was !== server) reload();
   else waiting = setTimeout(refresh, 300);
 });

@@ -96,6 +96,13 @@ impl Graph {
     /// or from the site's top; not to another site, nor to a file that is not Markdown.
     #[must_use]
     pub fn join(page: &Path, dest: &str) -> Option<PathBuf> {
+        Self::resolve(page, dest).filter(|path| Self::is_page(path))
+    }
+
+    /// A link's target, from a page, as a path in the site, whatever it names: relative to the page, or from the
+    /// site's top; not to another site.
+    #[must_use]
+    pub fn resolve(page: &Path, dest: &str) -> Option<PathBuf> {
         let path = dest.split(['#', '?']).next()?;
         let elsewhere = path.starts_with("//")
             || path
@@ -120,7 +127,7 @@ impl Graph {
                 part => tidy.push(part),
             }
         }
-        Self::is_page(&tidy).then_some(tidy)
+        Some(tidy)
     }
 
     fn is_page(path: &Path) -> bool {
