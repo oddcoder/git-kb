@@ -103,35 +103,43 @@ function load(fresh: Document): void {
 }
 
 // One fetch at a time, so that a page that takes the server a while cannot come back after a fresher one and be
-// swapped in over it: a change while one is fetched has the page fetched once more after it.
+// swapped in over it: a change while one is fetched has the page fetched once more after it. A change the page shows
+// already is not fetched for: the server says when it saw each change, and when it began each page it sends, and a
+// page begun after a change has it, as the page fetched after a reply sent from it has the reply.
 let waiting: ReturnType<typeof setTimeout> | undefined;
-let fetching = false, again = false;
-async function refresh(): Promise<void> {
+let fetching = false, again = false, surely = false;
+let told = 0, shown = 0;
+async function refresh(sure = false): Promise<void> {
   waiting = undefined;
   if (fetching) {
     again = true;
+    surely ||= sure;
     return;
   }
+  if (!sure && told <= shown) return;
   if (busy()) {
-    waiting = setTimeout(refresh, 1000);
+    waiting = setTimeout(() => void refresh(sure), 1000);
     return;
   }
   fetching = true;
   try {
     const res = await fetch(location.href, { cache: 'no-store' }).catch(() => null);
     if (!res) return;
+    const begun = Number(res.headers.get('x-kb-begun')) || 0;
     const fresh = new DOMParser().parseFromString(await res.text(), 'text/html');
     if (busy()) {
-      waiting = setTimeout(refresh, 1000);
+      waiting = setTimeout(() => void refresh(sure), 1000);
       return;
     }
     swap(fresh);
+    shown = Math.max(shown, begun);
   } finally {
     fetching = false;
     if (again) {
-      again = false;
+      const sure = surely;
+      again = surely = false;
       clearTimeout(waiting);
-      void refresh();
+      void refresh(sure);
     }
   }
 }
@@ -147,14 +155,16 @@ function reload(): void {
 document.addEventListener('kb-stale', (e) => {
   e.preventDefault();
   clearTimeout(waiting);
-  void refresh();
+  void refresh(true);
 });
 
 // Changes come in bursts, as a save writes a file twice or a commit moves several refs: one fetch once they settle.
 const events = new EventSource('/_events');
-events.addEventListener('message', () => {
+events.addEventListener('message', (e) => {
+  // When the server saw it; from a server that does not say, it is newer than any page.
+  told = Math.max(told, Number(String(e.data).split(' ')[1]) || Infinity);
   clearTimeout(waiting);
-  waiting = setTimeout(refresh, 300);
+  waiting = setTimeout(() => void refresh(), 300);
 });
 // The server says which run of git-kb it is each time the page connects. Connecting again, after it stopped, the page
 // loads again: as a whole if it began again since, or else fetched afresh, for what changed while it was away.
@@ -165,5 +175,5 @@ events.addEventListener('server', (e) => {
   if (was === undefined) return;
   clearTimeout(waiting);
   if (was !== server) reload();
-  else waiting = setTimeout(refresh, 300);
+  else waiting = setTimeout(() => void refresh(true), 300);
 });

@@ -369,11 +369,13 @@ document.addEventListener('drop', (e) => {
   for (const image of found) void keep(image, box, image.name.replace(/[[\]]/g, ''));
 });
 
-// A reply, a thread resolved or reopened, and a sync, sent from the page rather than by leaving it: once the server
-// has it, the page is fetched afresh in place, as when anything it shows changes, the reader kept where they are and
-// the thread as it was, open or not. The box is emptied first, so that it is not taken for a reply being written.
-// What the server refuses is said under the form, which keeps what was written. Should no script be there to fetch
-// the page afresh, it loads again, as it would without this one.
+// A reply, a thread resolved or reopened, and a sync, sent from the page rather than by leaving it, and shown at once,
+// as it will be: a thread resolved folds and goes, unless resolved threads are shown, and its button says Reopen; a
+// reply is in its thread, faded, as being sent, its box emptied; a sync says it is syncing. Once the server has it,
+// the page is fetched afresh in place, as when anything it shows changes, the reader kept where they are and each
+// thread as it was, open or not. What the server refuses is put back as it was, and said under the form, with what
+// was written in its box again. Should no script be there to fetch the page afresh, it loads again, as it would
+// without this one.
 const SENT = 'form.reply, form.resolve, form.sync';
 function refused(form: HTMLFormElement, why: string): void {
   let said = form.querySelector<HTMLElement>('.cmt-refused');
@@ -385,23 +387,69 @@ function refused(form: HTMLFormElement, why: string): void {
   }
   said.textContent = why;
 }
+// Each shows what was sent as done, and gives back how to put it as it was.
+function resolving(form: HTMLFormElement): () => void {
+  const thread = form.closest<HTMLDetailsElement>('details.thread');
+  const state = form.querySelector<HTMLInputElement>('input[name="resolved"]');
+  const button = form.querySelector<HTMLButtonElement>('button');
+  if (!thread || !state || !button) return () => {};
+  const was = { resolved: thread.classList.contains('resolved'), open: thread.open, state: state.value, says: button.textContent };
+  const resolved = state.value === '1';
+  thread.classList.toggle('resolved', resolved);
+  thread.open = !resolved;
+  state.value = resolved ? '0' : '1';
+  button.textContent = resolved ? 'Reopen' : 'Resolve';
+  again();
+  return () => {
+    thread.classList.toggle('resolved', was.resolved);
+    thread.open = was.open;
+    state.value = was.state;
+    button.textContent = was.says;
+    again();
+  };
+}
+function replying(form: HTMLFormElement): () => void {
+  const box = form.querySelector<HTMLTextAreaElement>('textarea');
+  if (!box) return () => {};
+  const written = box.value;
+  const sent = document.createElement('div');
+  sent.className = 'c sending';
+  sent.innerHTML = '<p class="c-head"><b>You</b> <span>sending…</span></p><div class="c-body"><p></p></div>';
+  sent.querySelector('.c-body p')!.textContent = written;
+  form.before(sent);
+  box.value = '';
+  again();
+  return () => {
+    sent.remove();
+    box.value = written;
+    again();
+  };
+}
+function syncing(form: HTMLFormElement): () => void {
+  const button = form.querySelector<HTMLButtonElement>('button');
+  const says = button?.textContent ?? '';
+  if (button) button.textContent = 'Syncing…';
+  return () => { if (button) button.textContent = says; };
+}
 document.addEventListener('submit', async (e) => {
   const form = e.target instanceof HTMLFormElement && e.target.matches(SENT) ? e.target : null;
   if (!form) return;
   e.preventDefault();
   const buttons = $$<HTMLButtonElement>('button', form);
   if (buttons.some((b) => b.disabled)) return;
+  // What is sent is taken before the form shows it done, which changes it.
+  const body = new URLSearchParams([...new FormData(form)].map(([k, v]) => [k, String(v)]));
+  const undo = form.matches('form.resolve') ? resolving(form) : form.matches('form.reply') ? replying(form) : syncing(form);
   buttons.forEach((b) => { b.disabled = true; });
+  form.querySelector('.cmt-refused')?.remove();
+  if (form.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
   try {
-    const body = new URLSearchParams([...new FormData(form)].map(([k, v]) => [k, String(v)]));
     // The server answers what it took by sending the reader back to the page, which is fetched afresh below instead.
     const res = await fetch(form.action, { method: 'POST', body, redirect: 'manual' });
     if (res.type !== 'opaqueredirect' && !res.ok) throw new Error((await res.text()) || res.statusText);
-    form.reset();
-    form.querySelector('.cmt-refused')?.remove();
-    if (form.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
     if (document.dispatchEvent(new Event('kb-stale', { cancelable: true }))) location.reload();
   } catch (err) {
+    undo();
     refused(form, err instanceof Error ? err.message : String(err));
   } finally {
     buttons.forEach((b) => { b.disabled = false; });

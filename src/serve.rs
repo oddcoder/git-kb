@@ -109,14 +109,7 @@ impl Server {
             shell,
             changes: broadcast::channel(16).0,
             stopping: watch::channel(false).0,
-            began: format!(
-                "{} {}",
-                env!("CARGO_PKG_VERSION"),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
-            ),
+            began: format!("{} {}", env!("CARGO_PKG_VERSION"), Self::millis()),
             found: Mutex::new(HashMap::new()),
         }
     }
@@ -254,13 +247,29 @@ impl Server {
                 )),
             )
             .merge(Self::agent_routes())
+            // Each answer says when it was begun, so that an open page fetching itself afresh knows which changes
+            // it already shows: those the server told of before then.
             .fallback(|State(server): State<Arc<Self>>, uri: Uri| async move {
                 let (path, query) = (uri.path().to_owned(), uri.query().map(str::to_owned));
-                tokio::task::spawn_blocking(move || server.answer(&path, query.as_deref()))
-                    .await
-                    .unwrap_or_else(|e| Self::broke(&e.into()))
+                let begun = Self::millis().to_string();
+                let mut answer =
+                    tokio::task::spawn_blocking(move || server.answer(&path, query.as_deref()))
+                        .await
+                        .unwrap_or_else(|e| Self::broke(&e.into()));
+                if let Ok(begun) = header::HeaderValue::from_str(&begun) {
+                    answer.headers_mut().insert("x-kb-begun", begun);
+                }
+                answer
             })
             .with_state(self)
+    }
+
+    /// The time now, in milliseconds since 1970, as the server says when it began, saw a change, or began an answer.
+    fn millis() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
     }
 
     /// The site's changes, as events, one each, for as long as the page listens, or until the server stops.
@@ -271,10 +280,13 @@ impl Server {
             .event("server")
             .data(&self.began)
             .retry(std::time::Duration::from_millis(500)))));
+        // Each change with when the server saw it.
         let changes = BroadcastStream::new(self.changes.subscribe()).filter_map(|change| {
-            change
-                .ok()
-                .map(|_| Some(Ok(Event::default().data("changed"))))
+            change.ok().map(|_| {
+                Some(Ok(
+                    Event::default().data(format!("changed {}", Self::millis()))
+                ))
+            })
         });
         let stopped = WatchStream::new(self.stopping.subscribe())
             .filter_map(|stopping| stopping.then_some(None));
@@ -2078,8 +2090,32 @@ mod tests {
             "{}",
             server.began
         );
+        let before = Server::millis();
         server.changes.send("docs").unwrap();
-        assert_eq!(&next().await[..], b"data: changed\n\n");
+        let changed = String::from_utf8_lossy(&next().await).into_owned();
+        let at: u128 = changed
+            .strip_prefix("data: changed ")
+            .and_then(|rest| rest.strip_suffix("\n\n"))
+            .and_then(|at| at.parse().ok())
+            .unwrap_or_else(|| panic!("{changed:?}"));
+        assert!(before <= at && at <= Server::millis(), "{changed:?}");
+    }
+
+    #[tokio::test]
+    async fn each_answer_says_when_it_was_begun() {
+        let site = Site::with(&[("docs/a.md", b"# A")]);
+        let before = Server::millis();
+        let response = Arc::new(Server::new(site.docs.clone(), None))
+            .router()
+            .oneshot(Request::get("/docs/a.md").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let begun: u128 = response.headers()["x-kb-begun"]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(before <= begun && begun <= Server::millis());
     }
 
     #[tokio::test]
