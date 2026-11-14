@@ -93,7 +93,7 @@ impl Shell {
             }
             _ => (String::new(), "top".to_string()),
         };
-        let base = on.map(|p| self.page_link(at, p)).unwrap_or_default();
+        let base = on.map_or_default(|p| self.page_link(at, p));
         let href = if base.is_empty() && anchor.is_empty() {
             "#".to_string()
         } else {

@@ -168,9 +168,7 @@ impl Shell {
         notes: Option<&Notes>,
         range: &Range<usize>,
     ) -> Option<Mark> {
-        let comments = notes
-            .map(|notes| self.comment_mark(notes, range))
-            .unwrap_or_default();
+        let comments = notes.map_or_default(|notes| self.comment_mark(notes, range));
         match changed {
             Some(mut mark) => {
                 mark.html.push_str(&comments);

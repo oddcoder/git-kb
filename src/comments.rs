@@ -324,7 +324,7 @@ impl Store {
             lines: [start, end],
             quote: lines[start..end].join("\n"),
             snippet: on.snippet.clone(),
-            kind: ai.map(|(_, kind)| kind.to_string()).unwrap_or_default(),
+            kind: ai.map_or_default(|(_, kind)| kind.to_string()),
         };
         let files = [
             (format!("texts/{text}"), text),
@@ -334,9 +334,7 @@ impl Store {
                 json(&repo, &self.comment(body, ai.map(|(agent, _)| agent)))?,
             ),
         ];
-        let by = ai
-            .map(|(agent, kind)| format!(" (AI: {agent}, {kind})"))
-            .unwrap_or_default();
+        let by = ai.map_or_default(|(agent, kind)| format!(" (AI: {agent}, {kind})"));
         let message = format!(
             "Comment on {}{by}: {}",
             on.page.display(),
@@ -368,9 +366,7 @@ impl Store {
             format!("threads/{id}/comments/{}.json", stamp()),
             json(&repo, &self.comment(body, agent))?,
         );
-        let by = agent
-            .map(|agent| format!(" (AI: {agent})"))
-            .unwrap_or_default();
+        let by = agent.map_or_default(|agent| format!(" (AI: {agent})"));
         let message = format!(
             "Reply on {}{by}: {}",
             thread.page.display(),
@@ -426,9 +422,7 @@ impl Store {
             json(&repo, &event)?,
         );
         let what = if resolved { "Resolve" } else { "Reopen" };
-        let by = agent
-            .map(|agent| format!(" (AI: {agent})"))
-            .unwrap_or_default();
+        let by = agent.map_or_default(|agent| format!(" (AI: {agent})"));
         let message = format!("{what} a thread on {}{by}", thread.page.display());
         self.commit(&repo, &[file], &message)
     }
@@ -938,10 +932,7 @@ fn is_ancestor(repo: &gix::Repository, ancestor: ObjectId, of: ObjectId) -> bool
 /// what they were.
 fn plainly_here(thread: &Thread, text: &str, lines: &Range<usize>, state: State) -> bool {
     let now: Vec<&str> = text.lines().collect();
-    let here = now
-        .get(lines.clone())
-        .map(|l| l.join("\n"))
-        .unwrap_or_default();
+    let here = now.get(lines.clone()).map_or_default(|l| l.join("\n"));
     state == State::Same || Diff::similarity(&thread.quote, &here) >= 0.6
 }
 

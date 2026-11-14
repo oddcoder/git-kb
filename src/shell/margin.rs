@@ -147,8 +147,7 @@ impl<'a> Margin<'a> {
                 self.repo
                     .snapshot(&rev)
                     .and_then(|at| self.repo.read(&at, self.page))
-                    .map(|b| String::from_utf8_lossy(&b).into_owned())
-                    .unwrap_or_default()
+                    .map_or_default(|b| String::from_utf8_lossy(&b).into_owned())
             })
             .clone();
         Diff::block(&old, self.text, block, self.renderer, self.moved)

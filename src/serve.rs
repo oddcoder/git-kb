@@ -1061,9 +1061,7 @@ impl View<'_> {
             &pages,
         );
         let body = Shell::with_source(&body, &self.server.renderer.source(&text));
-        let rail = notes
-            .map(|notes| self.shell.rail(&notes))
-            .unwrap_or_default();
+        let rail = notes.map_or_default(|notes| self.shell.rail(&notes));
         Html(
             self.shell
                 .page_with_rail(at, "", &title, &body, &nav, &rail),
@@ -1206,7 +1204,7 @@ impl View<'_> {
             .flatten();
         let old = match repo.snapshot(from) {
             // A page not at the commit was added since.
-            Ok(at) => repo.read(&at, file).map(text).unwrap_or_default(),
+            Ok(at) => repo.read(&at, file).map_or_default(text),
             // The commit before the first is nothing.
             Err(_)
                 if from
@@ -1220,7 +1218,7 @@ impl View<'_> {
         let new = match to {
             // A page not at the commit was removed by then.
             Some(to) => match repo.snapshot(to) {
-                Ok(at) => repo.read(&at, file).map(text).unwrap_or_default(),
+                Ok(at) => repo.read(&at, file).map_or_default(text),
                 Err(e) => return self.server.missing(&format!("{e:#}")),
             },
             None => match self.read(file) {

@@ -11,15 +11,12 @@ impl Shell {
         let (action, rev) = match self.links {
             Links::Served => (
                 "/_search".to_string(),
-                self.revision
-                    .as_ref()
-                    .map(|r| {
-                        format!(
-                            "<input type=\"hidden\" name=\"ref\" value=\"{}\">",
-                            Self::escape(&r.name)
-                        )
-                    })
-                    .unwrap_or_default(),
+                self.revision.as_ref().map_or_default(|r| {
+                    format!(
+                        "<input type=\"hidden\" name=\"ref\" value=\"{}\">",
+                        Self::escape(&r.name)
+                    )
+                }),
             ),
             Links::Built => (self.to(at, "_search.html"), String::new()),
         };

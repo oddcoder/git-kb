@@ -478,7 +478,7 @@ impl Shell {
         for (path, title, front) in &found {
             let mut data = String::new();
             for (field, _) in &choices {
-                let v = front.get(field).map(Self::plain).unwrap_or_default();
+                let v = front.get(field).map_or_default(Self::plain);
                 let _ = write!(
                     data,
                     " data-{}=\"{}\"",
@@ -551,8 +551,7 @@ impl Shell {
             let mut values: Vec<String> = field
                 .get("enum")
                 .and_then(Value::as_array)
-                .map(|vs| vs.iter().map(Self::plain).collect())
-                .unwrap_or_default();
+                .map_or_default(|vs| vs.iter().map(Self::plain).collect());
             for (_, _, front) in found {
                 if let Some(v) = front.get(name).map(Self::plain)
                     && !values.contains(&v)

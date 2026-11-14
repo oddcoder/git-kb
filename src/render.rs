@@ -898,7 +898,7 @@ impl Renderer {
         if let Some(plugin) = self.plugins.block(&lang) {
             let source = Self::plain_text(&inner);
             let figure = label.and_then(|(id, _)| figures.iter().find(|f| f.id == id));
-            let caption = figure.map(|f| self.inline(&f.caption)).unwrap_or_default();
+            let caption = figure.map_or_default(|f| self.inline(&f.caption));
             return vec![Event::Html(
                 self.plugins
                     .render_block(plugin, &source, figure.map(|f| (f, caption.as_str())))

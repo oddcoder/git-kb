@@ -125,8 +125,7 @@ impl Schema {
         self.root
             .get("properties")
             .and_then(Value::as_object)
-            .map(|props| props.keys().map(String::as_str).collect())
-            .unwrap_or_default()
+            .map_or_default(|props| props.keys().map(String::as_str).collect())
     }
 
     /// What a value of a schema is: by its `x-kb`, its `enum`, its format and its type, a `$ref` followed.

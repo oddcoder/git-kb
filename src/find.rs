@@ -72,8 +72,7 @@ pub fn pages(
             });
             let filters = renderer
                 .front(&text)
-                .map(|front| filters(&front, doctypes))
-                .unwrap_or_default();
+                .map_or_default(|front| filters(&front, doctypes));
             Some(Page {
                 url: url(f),
                 title,

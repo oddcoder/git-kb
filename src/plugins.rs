@@ -673,8 +673,7 @@ fn fingerprint(
 /// A SHA-1 of bytes, in hex.
 fn hash(bytes: &[u8]) -> String {
     gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, bytes)
-        .map(|id| id.to_string())
-        .unwrap_or_default()
+        .map_or_default(|id| id.to_string())
 }
 
 /// A TOML value as text: a list joined by commas.

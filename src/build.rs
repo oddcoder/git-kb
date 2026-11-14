@@ -442,7 +442,7 @@ impl Builder {
         };
         let body = shell.noted(at, path, &page, history, pages);
         let body = Shell::with_source(&body, &self.renderer.source(markdown));
-        let rail = notes.map(|notes| shell.rail(&notes)).unwrap_or_default();
+        let rail = notes.map_or_default(|notes| shell.rail(&notes));
         (
             shell.page_with_rail(at, &file, &title, &body, &nav, &rail),
             title,
@@ -517,8 +517,7 @@ impl Builder {
             past.repo
                 .snapshot(rev)
                 .and_then(|at| past.repo.read(&at, page.path))
-                .map(text)
-                .unwrap_or_default()
+                .map_or_default(text)
         };
         let here = Version {
             label: "the working copy".into(),
@@ -750,8 +749,7 @@ impl Builder {
                     .with_extension("html");
                 let about = pages
                     .summary(page)
-                    .map(|s| format!("<span>{}</span>", Self::escape(s)))
-                    .unwrap_or_default();
+                    .map_or_default(|s| format!("<span>{}</span>", Self::escape(s)));
                 let badges = shell.card_badges(pages.front(page));
                 let _ = writeln!(
                     body,

@@ -377,13 +377,12 @@ impl Shell {
             Self::encode(Path::new(file))
         };
         self.address(&format!("{folder}{file}"))
-            .map(|address| {
+            .map_or_default(|address| {
                 format!(
                     "<link rel=\"canonical\" href=\"{}\">\n",
                     Self::escape(&address)
                 )
             })
-            .unwrap_or_default()
     }
 
     /// A built page's address where its site lives, by its path from the site's top, as a link, when the site
